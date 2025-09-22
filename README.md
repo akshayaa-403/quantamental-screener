@@ -115,18 +115,6 @@ Composite Score = (Momentum × 0.4) + (Sentiment × 0.3) + (Volume × 0.2) + (Vo
 - **TextBlob**: Traditional NLP sentiment
 - **Ensemble Approach**: Combined scoring for robustness
 
-## 🤝 Contributing
-
-We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.md) for details.
-
-### Development Setup
-```bash
-git clone https://github.com/yourusername/quantamental-screener.git
-cd quantamental-screener
-pip install -e .
-```
-
-
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
