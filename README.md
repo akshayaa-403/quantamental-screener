@@ -6,11 +6,11 @@ A sophisticated multi-factor equity screener that combines technical analysis wi
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Status](https://img.shields.io/badge/Status-Active-brightgreen)
 
-## 📊 Overview
+## Overview
 
 This project implements a comprehensive quantamental (quantitative + fundamental) approach to stock screening by blending traditional technical indicators with modern natural language processing techniques. The system analyzes multiple factors including momentum, sentiment, volume, and volatility to generate ranked stock recommendations.
 
-## 🚀 Features
+## Features
 
 ### Core Capabilities
 - **Multi-Factor Scoring System** - Combines 4 key dimensions of stock analysis
@@ -27,7 +27,7 @@ This project implements a comprehensive quantamental (quantitative + fundamental
 - **Volume**: Chaikin Money Flow, Volume Ratios
 - **Sentiment**: News headline analysis with composite scoring
 
-## 🏗️ System Architecture
+## System Architecture
 
 ```mermaid
 graph TD
@@ -43,7 +43,7 @@ graph TD
     Backtest -->|Performance Metrics| User
 ```
 
-## 📦 Installation
+## Installation
 
 ### Prerequisites
 - Python 3.7 or higher
@@ -68,7 +68,7 @@ pip install yfinance ta transformers torch plotly kaleido
 pip install requests beautifulsoup4 textblob vaderSentiment
 ```
 
-## 📊 Sample Output
+## Sample Output
 
 ### Top Stock Recommendations
 | Rank | Ticker | Composite Score | Momentum | Sentiment | Sector |
@@ -84,7 +84,7 @@ pip install requests beautifulsoup4 textblob vaderSentiment
 - **Top Stocks Chart** - Horizontal bar chart of highest-ranked stocks
 - **Individual Stock Analysis** - Detailed technical charts for top picks
 
-## 🔧 Configuration
+## Configuration
 
 The screener can be customized through the `Config` class:
 
@@ -100,7 +100,7 @@ config = Config(
 )
 ```
 
-## 📈 Methodology
+## Methodology
 
 ### Scoring Algorithm
 The composite score is calculated using weighted factors:
@@ -115,6 +115,6 @@ Composite Score = (Momentum × 0.4) + (Sentiment × 0.3) + (Volume × 0.2) + (Vo
 - **TextBlob**: Traditional NLP sentiment
 - **Ensemble Approach**: Combined scoring for robustness
 
-## 📄 License
+## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
