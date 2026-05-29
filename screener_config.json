@@ -1,0 +1,12 @@
+{
+  "universe_size": 50,
+  "weights": {
+    "momentum": 0.4,
+    "sentiment": 0.3,
+    "volume": 0.2,
+    "volatility": 0.1
+  },
+  "analysis_date": "2026-05-29T13:48:41.657421",
+  "stocks_analyzed": 10,
+  "top_n": 10
+}
