@@ -16,25 +16,73 @@ class UniverseSelector:
         self.sector_info = {}
 
     def get_sp500_tickers(self) -> List[str]:
-        """Get S&P 500 tickers from Wikipedia"""
         try:
+            import requests
+            from bs4 import BeautifulSoup
+        
             url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-            tables = pd.read_html(url)
-            sp500_df = tables[0]
+            headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+        
+            # Parse with BeautifulSoup to find the correct table
+            soup = BeautifulSoup(response.text, 'lxml')
+            # The main table has class "wikitable sortable" or just "wikitable"
+            table = soup.find('table', class_='wikitable')
+            if not table:
+                # Fallback: try to find any table with "wikitable"
+                table = soup.find('table', {'class': 'wikitable'})
+        
+            if table:
+                # Convert the table HTML to a pandas DataFrame
+                df = pd.read_html(str(table))[0]
+            else:
+                # If no table found, fallback to reading all tables (old method)
+                tables = pd.read_html(response.text)
+                if not tables:
+                    raise ValueError("No tables found on Wikipedia page")
+                df = tables[0]
+        
+        # The first column is usually 'Symbol'
+        if 'Symbol' not in df.columns:
+            # Try to find the column by position (first column)
+            symbol_col = df.columns[0]
+        else:
+            symbol_col = 'Symbol'
+        
+        tickers = df[symbol_col].tolist()
+        
+        # Store sector information (adjust column names as needed)
+        # Typical columns: 'Symbol', 'Security', 'GICS Sector', 'GICS Sub-Industry'
+        sector_col = 'GICS Sector' if 'GICS Sector' in df.columns else None
+        industry_col = 'GICS Sub-Industry' if 'GICS Sub-Industry' in df.columns else None
+        name_col = 'Security' if 'Security' in df.columns else None
+        
+        for _, row in df.iterrows():
+            ticker = row[symbol_col]
+            self.sector_info[ticker] = {
+                'sector': row[sector_col] if sector_col else 'Unknown',
+                'industry': row[industry_col] if industry_col else 'Unknown',
+                'company_name': row[name_col] if name_col else ticker
+            }
+        
+        print(f"Successfully fetched {len(tickers)} S&P 500 tickers from Wikipedia")
+        return tickers
 
-            # Store sector information
-            for _, row in sp500_df.iterrows():
-                self.sector_info[row['Symbol']] = {
-                    'sector': row['GICS Sector'],
-                    'industry': row['GICS Sub-Industry'],
-                    'company_name': row['Security']
-                }
+    except ImportError as e:
+        if 'lxml' in str(e).lower() or 'bs4' in str(e).lower():
+            print("Error: Missing required library. Please run: pip install lxml beautifulsoup4")
+        else:
+            print(f"Import error: {e}")
+        print("Using fallback predefined ticker list.")
+        return ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'JPM', 'JNJ', 'V']
 
-            return sp500_df['Symbol'].tolist()
-        except Exception as e:
-            print(f"Error fetching S&P 500 tickers: {e}")
-            # Fallback to predefined list
-            return ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'JPM', 'JNJ', 'V']
+    except Exception as e:
+        print(f"Error fetching S&P 500 tickers from Wikipedia: {e}")
+        print("Using fallback predefined ticker list.")
+        return ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'JPM', 'JNJ', 'V']
 
     def filter_universe(self, tickers: List[str]) -> List[str]:
         """Filter universe based on market cap and volume criteria"""
@@ -49,17 +97,14 @@ class UniverseSelector:
                 stock = yf.Ticker(ticker)
                 info = stock.info
 
-                # Check market cap
                 market_cap = info.get('marketCap', 0)
                 if market_cap < self.config.MIN_MARKET_CAP:
                     continue
 
-                # Check average volume
                 avg_volume = info.get('averageVolume', 0)
                 if avg_volume < self.config.MIN_VOLUME:
                     continue
 
-                # Check if stock is tradeable
                 if info.get('quoteType') != 'EQUITY':
                     continue
 
