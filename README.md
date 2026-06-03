@@ -37,7 +37,7 @@ python app.py --top-n 10
 
 # Or launch web dashboard
 streamlit run streamlit_app.py
-
+```
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
