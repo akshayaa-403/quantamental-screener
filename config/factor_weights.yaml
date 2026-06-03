@@ -1,0 +1,16 @@
+factors:
+  - name: momentum
+    weight: 0.30
+    enabled: true
+  - name: sentiment
+    weight: 0.25
+    enabled: true
+  - name: volume
+    weight: 0.15
+    enabled: true
+  - name: volatility
+    weight: 0.10
+    enabled: true
+  - name: my_factor
+    weight: 0.20
+    enabled: true

@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+env/
+venv/
+.env
+.venv
+*.egg-info/
+dist/
+build/
+
+# Redis data
+redis_data/
+
+# Streamlit
+.streamlit/
+
+# Output files
+*.csv
+*.html
+*.png
+*.json
+screener_config.json
+top_stocks_recommendations.csv
+all_stock_scores.csv
+
+# IDE
+.vscode/
+.idea/
+*.swp
