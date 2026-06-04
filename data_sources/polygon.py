@@ -16,7 +16,7 @@ class PolygonSource(DataSource, CacheMixin):
     def __init__(self, api_key: str = None):
         CacheMixin.__init__(self)
         settings = get_settings()
-        self.api_key = api_key or getattr(settings, 'POLYGON_API_KEY', None)
+        self.api_key = api_key or settings.polygon_api_key
         if not self.api_key:
             raise ValueError("Polygon API key required. Set POLYGON_API_KEY in .env")
         self.base_url = "https://api.polygon.io"

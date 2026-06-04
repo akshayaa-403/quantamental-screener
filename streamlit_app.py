@@ -52,6 +52,8 @@ if 'price_data' not in st.session_state:
     st.session_state.price_data = None
 if 'scores_df' not in st.session_state:
     st.session_state.scores_df = None
+if 'data_source' not in st.session_state:
+    st.session_state.data_source = None
 
 @st.cache_resource(ttl=3600)
 def load_components():
@@ -104,7 +106,7 @@ def run_screener(universe_size, start_date, end_date, weights):
     backtest_engine = BacktestEngine()
     backtest_results = backtest_engine.run(scores_df, price_data)
     
-    return scores_df, price_data, backtest_results, sentiment_scores
+    return scores_df, price_data, backtest_results, sentiment_scores, data_source
 
 def main():
     # Header
@@ -159,7 +161,7 @@ def main():
     if run_button:
         with st.spinner("Running analysis pipeline... This may take 1-2 minutes."):
             try:
-                scores_df, price_data, backtest_results, sentiment_scores = run_screener(
+                scores_df, price_data, backtest_results, sentiment_scores, data_source = run_screener(
                     universe_size, 
                     str(start_date), 
                     str(end_date), 
@@ -168,6 +170,7 @@ def main():
                 
                 st.session_state.scores_df = scores_df
                 st.session_state.price_data = price_data
+                st.session_state.data_source = data_source
                 st.session_state.screener_results = {
                     'backtest': backtest_results,
                     'sentiment': sentiment_scores
@@ -322,12 +325,15 @@ def main():
                 
                 # News headlines
                 with st.expander("Recent News Headlines"):
-                    headlines = data_source.get_news_headlines(selected_ticker, lookback_days=7)
-                    if headlines:
-                        for headline in headlines:
-                            st.write(f"• {headline}")
+                    if st.session_state.data_source is not None:
+                        headlines = st.session_state.data_source.get_news_headlines(selected_ticker, lookback_days=7)
+                        if headlines:
+                            for headline in headlines:
+                                st.write(f"• {headline}")
+                        else:
+                            st.write("No recent news found.")
                     else:
-                        st.write("No recent news found.")
+                        st.write("Data source not available.")
 
 if __name__ == "__main__":
     # Add data_source to global for news fetching in tab4

@@ -20,7 +20,7 @@ class AlphaVantageSource(DataSource, CacheMixin):
     def __init__(self, api_key: str = None):
         CacheMixin.__init__(self)
         settings = get_settings()
-        self.api_key = api_key or settings.ALPHA_VANTAGE_API_KEY
+        self.api_key = api_key or settings.alpha_vantage_api_key
         if not self.api_key:
             raise ValueError("Alpha Vantage API key required. Set ALPHA_VANTAGE_API_KEY in .env")
         self.base_url = "https://www.alphavantage.co/query"

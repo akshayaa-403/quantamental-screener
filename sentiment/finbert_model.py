@@ -6,11 +6,19 @@ from typing import List, Dict
 
 class FinBERTModel(SentimentModel):
     def __init__(self):
-        self.tokenizer = AutoTokenizer.from_pretrained("ProsusAI/finbert")
-        self.model = AutoModelForSequenceClassification.from_pretrained("ProsusAI/finbert")
-        self.model.eval()
+        self.tokenizer = None
+        self.model = None
+        self._loaded = False
+    
+    def _load_model(self):
+        if not self._loaded:
+            self.tokenizer = AutoTokenizer.from_pretrained("ProsusAI/finbert")
+            self.model = AutoModelForSequenceClassification.from_pretrained("ProsusAI/finbert")
+            self.model.eval()
+            self._loaded = True
     
     def analyze(self, texts: List[str]) -> Dict[str, float]:
+        self._load_model()
         if not texts:
             return {'score': 0.0, 'confidence': 0.5, 'model': 'finbert'}
         # Simple average of probabilities

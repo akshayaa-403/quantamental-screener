@@ -3,7 +3,6 @@ import pickle
 import json
 from typing import Any, Optional
 from fakeredis import FakeStrictRedis
-from config import settings
 from config.settings import get_settings
 import logging
 
