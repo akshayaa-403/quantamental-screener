@@ -1,4 +1,4 @@
-from typing import List, Dict
+from typing import List
 import pandas as pd
 from core.data_source import DataSource
 from core.cache_mixin import CacheMixin
@@ -20,31 +20,39 @@ class DataCollector(CacheMixin):
             return cached
 
         price_data = self.data_source.get_price_data(tickers, start_date, end_date)
+
+        # Flatten MultiIndex columns if present (e.g., from Yahoo Finance)
+        if isinstance(price_data.columns, pd.MultiIndex):
+            price_data.columns = ['_'.join(col).strip() for col in price_data.columns.values]
+
         price_data = self._add_technical_indicators(price_data)
 
         self._cache.set(cache_key, price_data, ttl=14400)
         return price_data
 
     def _add_technical_indicators(self, price_data: pd.DataFrame) -> pd.DataFrame:
-        """
-        Add technical indicators (RSI, MACD, etc.) to the price data.
-        Works regardless of column name case.
-        """
-        for ticker in price_data.columns.levels[0]:
-            ticker_df = price_data[ticker].copy()
+        tickers = price_data.index.get_level_values('Ticker').unique()
 
+        for ticker in tickers:
+            ticker_df = price_data.xs(ticker, level='Ticker').copy()
             ticker_df.columns = [col.lower() for col in ticker_df.columns]
 
-            ticker_df['rsi'] = ta.momentum.RSIIndicator(close=ticker_df['close'], window=14).rsi()
+            # Ensure close is a 1D Series
+            close_series = ticker_df['close']
+            if isinstance(close_series, pd.DataFrame):
+                close_series = close_series.iloc[:, 0]
 
-            macd = ta.trend.MACD(close=ticker_df['close'])
-            ticker_df['macd'] = macd.macd()
-            ticker_df['macd_signal'] = macd.macd_signal()
+            rsi = ta.momentum.RSIIndicator(close=close_series, window=14).rsi()
+            macd = ta.trend.MACD(close=close_series)
+            macd_line = macd.macd()
+            macd_signal = macd.macd_signal()
+            sma_20 = ta.trend.SMAIndicator(close=close_series, window=20).sma_indicator()
+            sma_50 = ta.trend.SMAIndicator(close=close_series, window=50).sma_indicator()
 
-            ticker_df['sma_20'] = ta.trend.SMAIndicator(close=ticker_df['close'], window=20).sma_indicator()
-            ticker_df['sma_50'] = ta.trend.SMAIndicator(close=ticker_df['close'], window=50).sma_indicator()
-
-            for col in ticker_df.columns:
-                price_data[(ticker, col.upper())] = ticker_df[col]
+            price_data.loc[ticker, 'RSI'] = rsi.values
+            price_data.loc[ticker, 'MACD'] = macd_line.values
+            price_data.loc[ticker, 'MACD_SIGNAL'] = macd_signal.values
+            price_data.loc[ticker, 'SMA_20'] = sma_20.values
+            price_data.loc[ticker, 'SMA_50'] = sma_50.values
 
         return price_data

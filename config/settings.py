@@ -8,7 +8,7 @@ class RedisSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="REDIS_")
     
     url: str = "redis://localhost:6379/0"
-    enabled: bool = True
+    enabled: bool = False
     ttl_default: int = 3600
     ttl_price: int = 14400      # 4 hours
     ttl_sentiment: int = 604800 # 7 days

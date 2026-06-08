@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 class YahooFinanceSource(DataSource, CacheMixin):
     def __init__(self):
         CacheMixin.__init__(self)
-    
+
     def get_price_data(self, tickers: List[str], start: str, end: str) -> pd.DataFrame:
         cache_key = self._cache_key("price", tickers=sorted(tickers), start=start, end=end)
         cached = self._cache.get(cache_key)
@@ -30,11 +30,20 @@ class YahooFinanceSource(DataSource, CacheMixin):
         combined = pd.concat(data.values())
         combined.reset_index(inplace=True)
         combined.set_index(['Ticker', 'Date'], inplace=True)
-        combined.columns = [col.capitalize() for col in combined.columns]
+        
+        # FIX: Handle possible tuple column names (MultiIndex)
+        new_columns = []
+        for col in combined.columns:
+            if isinstance(col, tuple):
+                col_name = col[0] if col else ''
+            else:
+                col_name = col
+            new_columns.append(col_name.capitalize())
+        combined.columns = new_columns
         
         self._cache.set(cache_key, combined, ttl=14400)  # 4 hours
         return combined
-    
+
     def get_fundamentals(self, ticker: str) -> Dict:
         # Basic info from yfinance
         cache_key = self._cache_key("fundamental", ticker=ticker)
