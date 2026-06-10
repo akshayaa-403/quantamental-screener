@@ -1,8 +1,3 @@
-"""
-Alpha Vantage data source implementation.
-Requires API key set in environment variable ALPHA_VANTAGE_API_KEY.
-"""
-
 import requests
 import pandas as pd
 from typing import List, Dict
