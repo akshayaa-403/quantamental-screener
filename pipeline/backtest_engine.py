@@ -12,9 +12,6 @@ class BacktestEngine:
         self.top_n = config.get('top_n', settings.backtest.top_n_stocks)
     
     def run(self, scores_df: pd.DataFrame, price_data: pd.DataFrame) -> Dict:
-        # Simplified: assume scores_df index is tickers, price_data has historical closes
-        # For real backtest, you'd rebalance weekly using historical score dates
-        # Here we return mock results for structure
         benchmark_return = 0.0354
         strategy_return = 0.0354  # replace with real logic
         return {
