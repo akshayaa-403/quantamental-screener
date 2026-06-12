@@ -22,7 +22,14 @@ class ScoringEngine:
         
         # Combine scores
         combined = pd.DataFrame(factor_scores)
-        combined['composite'] = sum(combined[factor.name] * factor.weight 
-                                     for factor in self.factors if factor.name in combined)
+        # Use only numeric columns that match factor names
+        numeric_cols = [col for col in combined.columns if col in [f.name for f in self.factors]]
+        if numeric_cols:
+            combined['composite'] = sum(
+                combined[col] * next(f.weight for f in self.factors if f.name == col)
+                for col in numeric_cols
+            )
+        else:
+            combined['composite'] = 0.0
         combined['rank'] = combined['composite'].rank(ascending=False)
         return combined

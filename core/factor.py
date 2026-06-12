@@ -11,21 +11,25 @@ class Factor(ABC):
         pass
     
     def normalize(self, scores: pd.Series) -> pd.Series:
+        # Ensure scores is a Series
         if isinstance(scores, pd.DataFrame):
+            if scores.shape[1] == 0:
+                return pd.Series(0.0, index=scores.index)
             scores = scores.iloc[:, 0]
         if not isinstance(scores, pd.Series):
             scores = pd.Series(scores)
         
-        values = scores.values
-        mask = ~pd.isna(values)
-        clean = values[mask]
+        # Drop NaN values for min/max calculation
+        clean = scores.dropna()
         if len(clean) == 0:
             return pd.Series(0.0, index=scores.index)
         
-        min_val = np.min(clean)
-        max_val = np.max(clean)
+        # Use pandas min/max for robustness (avoids ambiguous truth errors)
+        min_val = clean.min()
+        max_val = clean.max()
         if max_val == min_val:
             return pd.Series(0.0, index=scores.index)
         
-        normalized = (values - min_val) / (max_val - min_val) * 2 - 1
-        return pd.Series(normalized, index=scores.index)
+        # Normalize to [-1, 1]
+        normalized = (scores - min_val) / (max_val - min_val) * 2 - 1
+        return normalized.fillna(0.0)
