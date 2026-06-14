@@ -1,4 +1,7 @@
+from cachetools import cached
 import yfinance as yf
+from newsapi import NewsApiClient
+import os
 import pandas as pd
 from typing import List, Dict
 from core.data_source import DataSource
@@ -89,16 +92,46 @@ class YahooFinanceSource(DataSource, CacheMixin):
         if cached:
             return cached
 
-        try:
-            stock = yf.Ticker(ticker)
-            news = stock.news
-            if not news:
-                headlines = []
-            else:
-                headlines = [item.get('title', '') for item in news[:5] if item.get('title')]
-        except Exception as e:
-            logger.warning(f"Could not fetch news for {ticker}: {e}")
-            headlines = []
+        # 1. Retrieve the API key from the environment variable
+        api_key = os.environ.get('NEWS_API_KEY')
+        if not api_key:
+            logger.error("NEWS_API_KEY environment variable not set.")
+            return []
 
-        self._cache.set(cache_key, headlines, ttl=3600)
-        return headlines
+        try:
+            newsapi = NewsApiClient(api_key=api_key)
+
+            # 3. Search for articles mentioning the company ticker
+            all_articles = newsapi.get_everything(q=ticker,
+                                                  language='en',
+                                                  sort_by='relevancy',
+                                                  page_size=5)
+
+            # 4. Extract the titles from the response
+            headlines = [article['title'] for article in all_articles.get('articles', [])]
+            logger.info(f"Fetched {len(headlines)} headlines for {ticker} from NewsAPI.")
+            # Cache the results
+            self._cache.set(cache_key, headlines, ttl=3600)
+            return headlines
+
+        except Exception as e:
+            logger.warning(f"Could not fetch news for {ticker} from NewsAPI: {e}")
+            return []
+            cache_key = self._cache_key("news", ticker=ticker, lookback=lookback_days)
+            cached = self._cache.get(cache_key)
+            if cached:
+                return cached
+
+            try:
+                stock = yf.Ticker(ticker)
+                news = stock.news
+                if not news:
+                    headlines = []
+                else:
+                    headlines = [item.get('title', '') for item in news[:5] if item.get('title')]
+            except Exception as e:
+                logger.warning(f"Could not fetch news for {ticker}: {e}")
+                headlines = []
+
+            self._cache.set(cache_key, headlines, ttl=3600)
+            return headlines
