@@ -11,6 +11,9 @@ from output import ConsoleReporter
 from utils.logging_utils import setup_logging
 from factors.my_factor import MyFactor
 
+from dotenv import load_dotenv
+load_dotenv()
+
 logger = logging.getLogger(__name__)
 
 @click.command()
