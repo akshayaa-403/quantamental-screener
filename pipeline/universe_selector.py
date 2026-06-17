@@ -4,6 +4,7 @@ from bs4 import BeautifulSoup
 from typing import List, Dict
 from config.settings import get_settings
 import logging
+import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
@@ -16,60 +17,82 @@ class UniverseSelector:
         self.min_volume = config.get('min_volume', settings.universe.min_volume)
 
     def select(self) -> List[str]:
-        tickers = self._fetch_sp500_wikipedia()
+        tickers = self._fetch_sp500_yfinance()
+        if not tickers:
+            tickers = self._fetch_sp500_wikipedia()
         if not tickers:
             tickers = self._fetch_fallback_tickers()
         selected = tickers[:self.universe_size]
         logger.info(f"Universe filtered to {len(selected)} stocks")
         return selected
 
+    def _fetch_sp500_yfinance(self) -> List[str]:
+        """Try to get S&P 500 constituents via yfinance (ETF holdings or index components)."""
+        try:
+            # Attempt 1: ^GSPC may have 'components' if supported
+            sp500 = yf.Ticker("^GSPC")
+            if hasattr(sp500, 'components') and sp500.components:
+                comps = sp500.components
+                if isinstance(comps, dict):
+                    tickers = list(comps.keys())
+                else:
+                    tickers = comps
+                logger.info(f"Fetched {len(tickers)} S&P 500 tickers from ^GSPC.components")
+                return tickers
+
+            # Attempt 2: Use SPY ETF holdings (more reliable)
+            spy = yf.Ticker("SPY")
+            holdings = spy.holdings
+            if holdings is not None and not holdings.empty:
+                # holdings may have 'Symbol' column or index as symbols
+                if 'Symbol' in holdings.columns:
+                    tickers = holdings['Symbol'].dropna().tolist()
+                else:
+                    tickers = holdings.index.tolist()
+                logger.info(f"Fetched {len(tickers)} S&P 500 tickers from SPY holdings")
+                return tickers
+        except Exception as e:
+            logger.warning(f"yfinance fetch failed: {e}")
+        return []
+
     def _fetch_sp500_wikipedia(self) -> List[str]:
+        """Robust Wikipedia parsing using pandas.read_html with column matching."""
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
         try:
             resp = requests.get(url, timeout=10, headers=headers)
             resp.raise_for_status()
-            # Parse tables with pandas
             tables = pd.read_html(resp.text)
             for table in tables:
-                # Check for a column that might contain ticker symbols (case-insensitive)
+                # Look for a column that contains 'symbol' or 'ticker'
                 cols = [col.lower() for col in table.columns]
                 if 'symbol' in cols or 'ticker' in cols:
-                    # Get the actual column name
                     col_name = table.columns[cols.index('symbol')] if 'symbol' in cols else table.columns[cols.index('ticker')]
-                    tickers = table[col_name].tolist()
-                    # Clean up any whitespace or empty values
-                    tickers = [t.strip() for t in tickers if isinstance(t, str) and t.strip()]
+                    tickers = table[col_name].dropna().astype(str).str.strip().tolist()
+                    tickers = [t for t in tickers if t and not t.startswith('^')]
                     logger.info(f"Fetched {len(tickers)} S&P 500 tickers via pandas.read_html")
                     return tickers
-            # If pandas didn't find the table, try BeautifulSoup
+            # Fallback: BeautifulSoup on the first wikitable
             soup = BeautifulSoup(resp.text, 'html.parser')
-            table = soup.find('table', {'id': 'constituents'})
-            if not table:
-                table = soup.find('table', {'class': 'wikitable'})
-            if not table:
-                logger.warning("Could not find S&P 500 table with BeautifulSoup either")
-                return []
-            tickers = []
-            for row in table.find_all('tr')[1:]:
-                cells = row.find_all('td')
-                if cells:
-                    ticker = cells[0].text.strip()
-                    if ticker:
-                        tickers.append(ticker)
-            logger.info(f"Fetched {len(tickers)} S&P 500 tickers via BeautifulSoup")
-            return tickers
-        except requests.exceptions.RequestException as e:
-            logger.error(f"HTTP error fetching S&P 500 tickers: {e}")
-            return []
+            table = soup.find('table', {'class': 'wikitable'})
+            if table:
+                tickers = []
+                for row in table.find_all('tr')[1:]:
+                    cells = row.find_all('td')
+                    if cells:
+                        ticker = cells[0].text.strip()
+                        if ticker and not ticker.startswith('^'):
+                            tickers.append(ticker)
+                logger.info(f"Fetched {len(tickers)} S&P 500 tickers via BeautifulSoup")
+                return tickers
         except Exception as e:
-            logger.error(f"Error fetching S&P 500 tickers: {e}")
-            return []
+            logger.error(f"Error fetching S&P 500 tickers from Wikipedia: {e}")
+        return []
 
     def _fetch_fallback_tickers(self) -> List[str]:
-        # Expanded list of 100 common US large‑cap stocks
+        """Fallback hardcoded list of 100 US large‑caps."""
         base_tickers = [
             'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'TSLA', 'META', 'BRK-B', 'V', 'JNJ',
             'WMT', 'JPM', 'PG', 'UNH', 'HD', 'MA', 'DIS', 'VZ', 'NFLX', 'CSCO',

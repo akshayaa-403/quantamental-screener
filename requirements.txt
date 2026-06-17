@@ -27,6 +27,7 @@ seaborn>=0.12.0
 streamlit>=1.28.0
 click>=8.1.0
 tqdm>=4.65.0
+tenacity>=8.0.0
 
 # Caching
 redis>=5.0.0

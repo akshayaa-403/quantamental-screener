@@ -1,4 +1,4 @@
-from typing import List, Dict
+from typing import List, Dict, Optional
 import pandas as pd
 from core.factor import Factor
 
@@ -9,20 +9,41 @@ class ScoringEngine:
             for factor in self.factors:
                 if factor.name in weights:
                     factor.weight = weights[factor.name]
-    
-    def compute(self, data: pd.DataFrame, sentiment_scores: Dict = None) -> pd.DataFrame:
+
+    def compute(self, data: pd.DataFrame, sentiment_scores: Optional[Dict] = None,
+                cross_sectional_normalize: bool = False) -> pd.DataFrame:
+        """
+        Compute factor scores.
+        If cross_sectional_normalize is True, normalize each factor per date across tickers.
+        Otherwise, use global normalization (original behavior).
+        """
         factor_scores = {}
         for factor in self.factors:
             kwargs = {}
             if factor.name == 'sentiment':
                 kwargs['sentiment_scores'] = sentiment_scores or {}
             raw = factor.compute(data, **kwargs)
-            normalized = factor.normalize(raw)
+
+            # Ensure the index is a MultiIndex with levels (Ticker, Date)
+            # If not, raise a clear error.
+            if not isinstance(raw.index, pd.MultiIndex) or raw.index.nlevels != 2:
+                raise ValueError(f"Factor {factor.name} returned a Series with invalid index. "
+                                 f"Expected MultiIndex of 2 levels, got {raw.index}")
+
+            if cross_sectional_normalize:
+                # Normalize per date (cross‑sectional)
+                # We know the second level is the date (position 1)
+                # To be safe, we rename the levels to 'Ticker' and 'Date' if they are missing
+                if raw.index.names[0] != 'Ticker' or raw.index.names[1] != 'Date':
+                    raw.index.set_names(['Ticker', 'Date'], inplace=True)
+                # Group by the second level (date) and apply normalization
+                normalized = raw.groupby(level=1).transform(self._normalize_series)
+            else:
+                normalized = factor.normalize(raw)
+
             factor_scores[factor.name] = normalized
-        
-        # Combine scores
+
         combined = pd.DataFrame(factor_scores)
-        # Use only numeric columns that match factor names
         numeric_cols = [col for col in combined.columns if col in [f.name for f in self.factors]]
         if numeric_cols:
             combined['composite'] = sum(
@@ -31,5 +52,19 @@ class ScoringEngine:
             )
         else:
             combined['composite'] = 0.0
-        combined['rank'] = combined['composite'].rank(ascending=False)
+
+        # Rank per date
+        combined['rank'] = combined.groupby(level=1)['composite'].rank(ascending=False)
         return combined
+
+    @staticmethod
+    def _normalize_series(s: pd.Series) -> pd.Series:
+        """Normalize a Series to [-1, 1] using min/max."""
+        clean = s.dropna()
+        if clean.empty:
+            return pd.Series(0.0, index=s.index)
+        min_val = clean.min()
+        max_val = clean.max()
+        if max_val == min_val:
+            return pd.Series(0.0, index=s.index)
+        return (s - min_val) / (max_val - min_val) * 2 - 1
