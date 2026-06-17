@@ -1,0 +1,27 @@
+[33m8dad626[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m)[m Updates
+[33mf2ca2c5[m Refactor and enhance quantamental screener
+[33m9663635[m[33m ([m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m Enhance UniverseSelector to fetch S&P 500 tickers with fallback options and improve error handling; remove outdated quick test script.
+[33m7b16078[m Replaced Mock Sentiment with Real News API
+[33m964bc86[m Added Dev Container Folder
+[33md59e189[m Updated Docker files
+[33mf03bdce[m Fixed wide-format data issue, added mock sentiment fallback, corrected serialization for Streamlit caching, and ensured all factors compute non-zero scores.
+[33mb090d73[m Update backtest_engine.py
+[33m93f6b97[m Remove docstring from alpha_vantage.py
+[33mc98a918[m Updated functions
+[33mf6c1ce8[m Updated DataCollector Method
+[33m4762c39[m Updated .env
+[33m15ce82a[m feat: Update API keys and refactor settings usage across data sources; remove deprecated files and add quick test script
+[33m74b3479[m Updates
+[33m3e1fe2f[m Updated README.md
+[33mb71281e[m feat: Implement scoring engine and universe selector for multi-factor equity screener
+[33ma8e739e[m Created a new file structure from scratch
+[33mcf575f6[m Removed test.py after testing for the correct ticker imports
+[33mfdccc8d[m Fixed Universe selector now fetches tickers correctly. Added Streamlit caching
+[33mc890482[m Added new files
+[33md6dc90d[m File structure changes
+[33m1f51efb[m Create .gitignore
+[33mb6e2f3b[m Update README.md
+[33m1d114ea[m Update README.md
+[33m2115725[m Update README.md
+[33m152acbc[m Created using Colab
+[33ma519961[m Initial commit
