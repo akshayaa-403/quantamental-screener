@@ -1,3 +1,6 @@
+import sys
+sys.stdout = open('nul', 'w')
+
 import click
 import pandas as pd
 import numpy as np

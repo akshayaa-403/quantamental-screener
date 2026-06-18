@@ -37,3 +37,16 @@ def retry_on_network_error(func):
         wait=wait_exponential(multiplier=1, min=2, max=10),
         retry=retry_if_exception_type((requests.RequestException, ConnectionError, TimeoutError))
     )(func)
+
+logger = logging.getLogger(__name__)
+
+def with_retry(max_attempts=3, min_wait=1, max_wait=10):
+    """Decorator for retrying network calls with exponential backoff."""
+    return retry(
+        stop=stop_after_attempt(max_attempts),
+        wait=wait_exponential(multiplier=1, min=min_wait, max=max_wait),
+        retry=retry_if_exception_type((requests.RequestException, ConnectionError, TimeoutError)),
+        before_sleep=lambda retry_state: logger.warning(
+            f"Retry {retry_state.attempt_number} after exception: {retry_state.outcome.exception()}"
+        )
+    )
