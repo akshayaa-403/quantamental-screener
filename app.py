@@ -1,10 +1,7 @@
-import sys
-sys.stdout = open('nul', 'w')
-
+import logging
 import click
 import pandas as pd
 import numpy as np
-import logging
 from config.settings import get_settings
 from data_sources.yahoo_finance import YahooFinanceSource
 from sentiment.ensemble_sentiment import EnsembleSentiment
@@ -14,8 +11,12 @@ from output import ConsoleReporter
 from utils.logging_utils import setup_logging
 from factors.my_factor import MyFactor
 from dotenv import load_dotenv
+import datetime
+
 load_dotenv()
 
+# Basic logging configuration (will be refined by setup_logging in cli)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 @click.command()
@@ -38,7 +39,6 @@ def cli(top_n):
     tickers = universe.select()
     logger.info(f"Selected universe: {tickers[:5]}... ({len(tickers)} total)")
 
-    import datetime
     end_date = datetime.date.today().strftime('%Y-%m-%d')
     start_date = (datetime.date.today() - datetime.timedelta(days=180)).strftime('%Y-%m-%d')
     price_data = collector.collect(tickers, start_date, end_date)
@@ -66,16 +66,24 @@ def cli(top_n):
             for t in tickers_in_data
         }
 
-    # Now run backtest (pass scorer and data)
+    # Run backtest
     backtest_results = backtester.run(scorer, price_data, sentiment_scores)
     if not backtest_results:
         logger.error("Backtest returned empty results.")
         return
 
-    # Also compute current scores for display
+    # Compute current scores for display (latest date)
     scores_df = scorer.compute(price_data, sentiment_scores, cross_sectional_normalize=True)
-    top_scores = scores_df.groupby('Date').last().nlargest(top_n, 'composite')
+    if scores_df.empty:
+        logger.error("No scores computed.")
+        return
 
+    # Get the most recent date and select top N
+    last_date = scores_df.index.get_level_values('Date').max()
+    current_scores = scores_df.xs(last_date, level='Date')
+    top_scores = current_scores.nlargest(top_n, 'composite')
+
+    # Display results
     output.display_results(
         top_scores,
         backtest_results,

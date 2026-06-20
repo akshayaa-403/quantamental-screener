@@ -107,13 +107,13 @@ def run_screener(universe_size, start_date, end_date, weights):
     
     # Scoring
     scorer = ScoringEngine(factors)
-    scores_df = scorer.compute(price_data, sentiment_scores)
+    scores_df = scorer.compute(price_data, sentiment_scores, cross_sectional_normalize=True)
     
-    # Backtest (optional, can be slow)
+    # Backtest - CORRECTED: pass scorer and sentiment_scores
     backtest_engine = BacktestEngine()
-    backtest_results = backtest_engine.run(scores_df, price_data)
+    backtest_results = backtest_engine.run(scorer, price_data, sentiment_scores)
     
-    # Return only serializable objects (no live data_source)
+    # Return only serializable objects
     return scores_df, price_data, backtest_results, sentiment_scores
 
 def main():
@@ -204,9 +204,13 @@ def main():
         with tab1:
             st.subheader("Top Stock Recommendations")
             
-            # Display top N stocks
+            # Display top N stocks for the MOST RECENT date
             top_n = st.selectbox("Number of stocks to display", [5, 10, 20, 50], index=1)
-            top_stocks = scores_df.nlargest(top_n, 'composite')
+            
+            # Get the latest date from scores_df index (which is MultiIndex: Date, Ticker)
+            latest_date = scores_df.index.get_level_values('Date').max()
+            latest_scores = scores_df.xs(latest_date, level='Date')
+            top_stocks = latest_scores.nlargest(top_n, 'composite')
             
             # Format display
             display_df = top_stocks[['composite', 'momentum', 'sentiment', 'volume', 'volatility']].copy()
@@ -230,29 +234,30 @@ def main():
             col1, col2 = st.columns(2)
             
             with col1:
-                # Score distribution
+                # Score distribution (using latest date)
+                latest_scores = scores_df.xs(scores_df.index.get_level_values('Date').max(), level='Date')
                 fig1 = px.histogram(
-                    scores_df, 
+                    latest_scores, 
                     x='composite', 
-                    title='Composite Score Distribution',
+                    title='Composite Score Distribution (Latest Date)',
                     labels={'composite': 'Composite Score', 'count': 'Number of Stocks'},
                     color_discrete_sequence=['#1f77b4']
                 )
                 st.plotly_chart(fig1, use_container_width=True)
             
             with col2:
-                # Factor contributions for top 10
-                top10 = scores_df.nlargest(10, 'composite')
+                # Factor contributions for top 10 (latest date)
+                top10 = latest_scores.nlargest(10, 'composite')
                 factor_cols = ['momentum', 'sentiment', 'volume', 'volatility']
                 top10_melted = top10.reset_index().melt(
-                    id_vars=['index'], 
+                    id_vars=['Ticker'], 
                     value_vars=factor_cols,
                     var_name='Factor', 
                     value_name='Score'
                 )
                 fig2 = px.bar(
                     top10_melted, 
-                    x='index', 
+                    x='Ticker', 
                     y='Score', 
                     color='Factor',
                     title='Factor Contributions (Top 10 Stocks)',
@@ -260,12 +265,12 @@ def main():
                 )
                 st.plotly_chart(fig2, use_container_width=True)
             
-            # Correlation heatmap
-            corr_matrix = scores_df[factor_cols].corr()
+            # Correlation heatmap (using latest scores)
+            corr_matrix = latest_scores[factor_cols].corr()
             fig3 = px.imshow(
                 corr_matrix,
                 text_auto=True,
-                title='Factor Correlation Heatmap',
+                title='Factor Correlation Heatmap (Latest Date)',
                 color_continuous_scale='RdBu',
                 zmin=-1, zmax=1
             )
@@ -275,36 +280,58 @@ def main():
             st.subheader("Backtest Performance")
             
             backtest = results['backtest']
+            if backtest:
+                # Metrics row
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Strategy Return", f"{backtest.get('strategy_return', 0)*100:.2f}%")
+                with col2:
+                    st.metric("Benchmark Return", f"{backtest.get('benchmark_return', 0)*100:.2f}%")
+                with col3:
+                    st.metric("Excess Return", f"{backtest.get('excess_return', 0)*100:.2f}%")
+                with col4:
+                    st.metric("Sharpe Ratio", f"{backtest.get('sharpe_ratio', 0):.2f}")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Max Drawdown", f"{backtest.get('max_drawdown', 0)*100:.2f}%")
+                with col2:
+                    st.metric("Volatility", f"{backtest.get('volatility', 0)*100:.2f}%")
+                
+                # Optional: show cumulative return chart if we have series data
+                if 'portfolio_series' in backtest and 'benchmark_series' in backtest:
+                    port_series = backtest['portfolio_series']
+                    bench_series = backtest['benchmark_series']
+                    # Normalize to 100 for comparison
+                    port_norm = port_series / port_series.iloc[0] * 100
+                    bench_norm = bench_series / bench_series.iloc[0] * 100
+                    df_plot = pd.DataFrame({
+                        'Strategy': port_norm,
+                        'Benchmark': bench_norm
+                    })
+                    fig = px.line(
+                        df_plot,
+                        title='Cumulative Performance (Normalized)',
+                        labels={'value': 'Index (100 = Start)', 'variable': 'Portfolio'}
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.warning("No backtest results available.")
             
-            # Metrics row
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Strategy Return", f"{backtest.get('strategy_return', 0)*100:.2f}%")
-            with col2:
-                st.metric("Benchmark Return", f"{backtest.get('benchmark_return', 0)*100:.2f}%")
-            with col3:
-                st.metric("Excess Return", f"{backtest.get('excess_return', 0)*100:.2f}%")
-            with col4:
-                st.metric("Sharpe Ratio", f"{backtest.get('sharpe_ratio', 0):.2f}")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Max Drawdown", f"{backtest.get('max_drawdown', 0)*100:.2f}%")
-            with col2:
-                st.metric("Volatility", f"{backtest.get('volatility', 0)*100:.2f}%")
-            
-            st.info("💡 Note: Backtest uses weekly rebalancing with top 10 stocks. Benchmark is S&P 500 (placeholder).")
+            st.info("💡 Note: Backtest uses weekly rebalancing with top 10 stocks. Benchmark is S&P 500.")
         
         with tab4:
             st.subheader("Individual Stock Analysis")
             
-            # Stock selector
-            tickers = scores_df.index.tolist()
-            selected_ticker = st.selectbox("Select Stock", tickers, index=0)
+            # Stock selector – get tickers from latest date
+            latest_date = scores_df.index.get_level_values('Date').max()
+            latest_scores = scores_df.xs(latest_date, level='Date')
+            tickers = latest_scores.index.tolist()
+            selected_ticker = st.selectbox("Select Stock", tickers, index=0 if tickers else None)
             
             if selected_ticker and st.session_state.price_data is not None:
-                # Get stock data
-                stock_score = scores_df.loc[selected_ticker]
+                # Get stock data from latest scores
+                stock_score = latest_scores.loc[selected_ticker]
                 sentiment_data = results['sentiment'].get(selected_ticker, {})
                 
                 # Display metrics
