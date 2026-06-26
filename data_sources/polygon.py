@@ -11,7 +11,6 @@ from tqdm import tqdm
 logger = logging.getLogger(__name__)
 
 class PolygonSource(DataSource, CacheMixin):
-    """Data source using Polygon.io API."""
     
     def __init__(self, api_key: str = None):
         CacheMixin.__init__(self)
@@ -22,10 +21,7 @@ class PolygonSource(DataSource, CacheMixin):
         self.base_url = "https://api.polygon.io"
     
     def get_price_data(self, tickers: List[str], start: str, end: str) -> pd.DataFrame:
-        """
-        Fetch aggregate (daily) bars for multiple tickers.
-        Note: Free tier limited to previous day data only.
-        """
+        
         cache_key = self._cache_key("polygon_price", tickers=sorted(tickers), start=start, end=end)
         cached = self._cache.get(cache_key)
         if cached is not None:
@@ -38,7 +34,6 @@ class PolygonSource(DataSource, CacheMixin):
         
         for ticker in tqdm(tickers, desc="Fetching from Polygon"):
             try:
-                # For free tier, use aggregates endpoint with limited range
                 url = f"{self.base_url}/v2/aggs/ticker/{ticker}/range/1/day/{start}/{end}"
                 params = {'adjusted': 'true', 'limit': 50000, 'apiKey': self.api_key}
                 
@@ -72,7 +67,7 @@ class PolygonSource(DataSource, CacheMixin):
         return df
     
     def get_fundamentals(self, ticker: str) -> Dict:
-        """Fetch stock financials (free tier limited)."""
+        
         cache_key = self._cache_key("polygon_fundamental", ticker=ticker)
         cached = self._cache.get(cache_key)
         if cached:
