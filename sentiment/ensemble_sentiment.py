@@ -4,15 +4,14 @@ import numpy as np
 
 class EnsembleSentiment(SentimentModel):
     def __init__(self, models=None, weights=None):
-        self.models = None  # Lazy load models
-        self.model_classes = models  # If provided externally
-        self.weights = weights or [0.5, 0.3, 0.2]  # FinBERT highest confidence
+        self.models = None
+        self.model_classes = models
+        self.weights = weights or [0.5, 0.3, 0.2]
         self._loaded = False
     
     def _load_models(self):
         if not self._loaded:
             if self.model_classes is None:
-                # Import here to delay loading heavy dependencies
                 from .finbert_model import FinBERTModel
                 from .vader_model import VADERModel
                 from .textblob_model import TextBlobModel
