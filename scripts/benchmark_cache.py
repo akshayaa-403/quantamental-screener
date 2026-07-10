@@ -10,10 +10,8 @@ setup_logging(logging.INFO)
 logger = logging.getLogger(__name__)
 
 def benchmark_cache_operations():
-    """Benchmark basic cache operations."""
     cache = CacheClient()
     
-    # Test data
     test_data = {
         'string': 'test_value',
         'dict': {'key': 'value', 'number': 42},
@@ -26,14 +24,12 @@ def benchmark_cache_operations():
     for data_type, data in test_data.items():
         key = f"benchmark_{data_type}"
         
-        # Write benchmark
         write_times = []
         for _ in range(10):
             start = time.perf_counter()
             cache.set(key, data, ttl=60)
             write_times.append(time.perf_counter() - start)
         
-        # Read benchmark
         read_times = []
         for _ in range(10):
             start = time.perf_counter()
@@ -50,16 +46,13 @@ def benchmark_cache_operations():
     return results
 
 def benchmark_cache_hit_improvement():
-    """Measure speed improvement from cache hits."""
     source = YahooFinanceSource()
     tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META']
     
-    # First run (cache miss)
     start = time.perf_counter()
     data1 = source.get_price_data(tickers, '2024-01-01', '2024-02-01')
     miss_time = time.perf_counter() - start
-    
-    # Second run (cache hit)
+
     start = time.perf_counter()
     data2 = source.get_price_data(tickers, '2024-01-01', '2024-02-01')
     hit_time = time.perf_counter() - start
@@ -71,12 +64,10 @@ def benchmark_cache_hit_improvement():
     }
 
 def main():
-    """Run all cache benchmarks."""
     print("\n" + "="*60)
     print("REDIS CACHE BENCHMARK")
     print("="*60)
     
-    # Cache operation benchmarks
     print("\n📊 Cache Operation Benchmarks (ms):")
     print("-"*50)
     results = benchmark_cache_operations()
@@ -85,9 +76,8 @@ def main():
         print(f"  Write: {metrics['write_avg_ms']:.3f}ms ± {metrics['write_std_ms']:.3f}ms")
         print(f"  Read:  {metrics['read_avg_ms']:.3f}ms ± {metrics['read_std_ms']:.3f}ms")
     
-    # Cache hit improvement
     print("\n" + "-"*50)
-    print("\n🚀 Cache Hit Improvement (Price Data):")
+    print("\n Cache Hit Improvement (Price Data):")
     print("-"*50)
     hit_improvement = benchmark_cache_hit_improvement()
     print(f"Cache Miss: {hit_improvement['cache_miss_seconds']:.2f} seconds")
