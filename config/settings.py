@@ -44,16 +44,14 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
-        extra="ignore"  # This ignores extra environment variables
+        extra="ignore"
     )
     
-    # Nested settings
     redis: RedisSettings = RedisSettings()
     universe: UniverseSettings = UniverseSettings()
     weights: FactorWeights = FactorWeights()
     backtest: BacktestSettings = BacktestSettings()
     
-    # External API keys (no prefix)
     finnhub_api_key: Optional[str] = None
     alpha_vantage_api_key: Optional[str] = None
     polygon_api_key: Optional[str] = None
