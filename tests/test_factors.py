@@ -118,11 +118,9 @@ class TestVolatilityFactor:
         """Test that higher volatility produces lower (worse) scores."""
         factor = VolatilityFactor()
         
-        # Create two tickers with different volatilities
         dates = pd.date_range('2024-01-01', '2024-02-01', freq='D')
         
         data = []
-        # Low volatility stock
         for date in dates:
             data.append({
                 'Ticker': 'LOW_VOL',
@@ -134,7 +132,6 @@ class TestVolatilityFactor:
                 'Volume': 1000000
             })
         
-        # High volatility stock
         for date in dates:
             data.append({
                 'Ticker': 'HIGH_VOL',
@@ -151,5 +148,4 @@ class TestVolatilityFactor:
         
         result = factor.compute(df)
         
-        # Low volatility should have higher (better) score
         assert result['LOW_VOL'] > result['HIGH_VOL']
