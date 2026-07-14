@@ -12,28 +12,21 @@ class ScoringEngine:
 
     def compute(self, data: pd.DataFrame, sentiment_scores: Optional[Dict] = None,
                 cross_sectional_normalize: bool = False) -> pd.DataFrame:
-        """
-        Compute factor scores.
-        If cross_sectional_normalize is True, normalize each factor per date across tickers.
-        Otherwise, use global normalization (original behavior).
-        """
+        
         factor_scores = {}
         for factor in self.factors:
             kwargs = {}
             if factor.name == 'sentiment':
                 kwargs['sentiment_scores'] = sentiment_scores or {}
             raw = factor.compute(data, **kwargs)
-
-            # Ensure the index is a MultiIndex with levels (Ticker, Date)
-            # If not, raise a clear error.
+            
             if not isinstance(raw.index, pd.MultiIndex) or raw.index.nlevels != 2:
                 raise ValueError(f"Factor {factor.name} returned a Series with invalid index. "
                                  f"Expected MultiIndex of 2 levels, got {raw.index}")
 
             if cross_sectional_normalize:
                 # Normalize per date (cross‑sectional)
-                # We know the second level is the date (position 1)
-                # To be safe, we rename the levels to 'Ticker' and 'Date' if they are missing
+                
                 if raw.index.names[0] != 'Ticker' or raw.index.names[1] != 'Date':
                     raw.index.set_names(['Ticker', 'Date'], inplace=True)
                 # Group by the second level (date) and apply normalization
@@ -59,7 +52,7 @@ class ScoringEngine:
 
     @staticmethod
     def _normalize_series(s: pd.Series) -> pd.Series:
-        """Normalize a Series to [-1, 1] using min/max."""
+        
         clean = s.dropna()
         if clean.empty:
             return pd.Series(0.0, index=s.index)
