@@ -1,0 +1,11 @@
+# Optional: enables sentiment/finbert_model.py for higher-accuracy financial
+# sentiment. NOT installed by default (see requirements.txt) because it adds
+# several hundred MB+ of resident memory once the model is loaded - too heavy
+# for memory-capped deployments like Streamlit Community Cloud's ~1GB limit.
+#
+# Install with:  pip install -r requirements.txt -r requirements-finbert.txt
+# Then use FinBERT explicitly, e.g.:
+#   from sentiment import FinBERTModel, VADERModel, TextBlobModel, EnsembleSentiment
+#   EnsembleSentiment(models=[FinBERTModel, VADERModel, TextBlobModel], weights=[0.5, 0.3, 0.2])
+transformers>=4.35.0
+torch>=2.0.0

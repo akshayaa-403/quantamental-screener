@@ -3,19 +3,35 @@ from typing import List, Dict
 import numpy as np
 
 class EnsembleSentiment(SentimentModel):
+    """Weighted ensemble over one or more sentiment models.
+
+    Defaults to VADER + TextBlob: both are lightweight, rule/lexicon-based
+    models with no ML weights to download or hold in memory, which keeps this
+    class safe to use in memory-constrained deployments (e.g. Streamlit
+    Community Cloud's ~1GB limit). FinBERT (transformers + torch) is far more
+    accurate on financial text but adds several hundred MB+ of resident memory
+    once loaded, so it is opt-in: pass
+    ``models=[FinBERTModel, VADERModel, TextBlobModel]`` explicitly (e.g. for
+    local/CLI use where memory isn't capped) to include it.
+    """
+
     def __init__(self, models=None, weights=None):
         self.models = None
         self.model_classes = models
-        self.weights = weights or [0.5, 0.3, 0.2]
+        self.weights = weights or [0.6, 0.4]
         self._loaded = False
-    
+
     def _load_models(self):
         if not self._loaded:
             if self.model_classes is None:
-                from .finbert_model import FinBERTModel
                 from .vader_model import VADERModel
                 from .textblob_model import TextBlobModel
-                self.model_classes = [FinBERTModel, VADERModel, TextBlobModel]
+                self.model_classes = [VADERModel, TextBlobModel]
+            if len(self.model_classes) != len(self.weights):
+                raise ValueError(
+                    f"{len(self.model_classes)} models but {len(self.weights)} weights; "
+                    "pass a matching `weights` list."
+                )
             self.models = [model_class() for model_class in self.model_classes]
             self._loaded = True
     

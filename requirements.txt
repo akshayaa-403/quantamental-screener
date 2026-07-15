@@ -11,10 +11,11 @@ lxml>=4.9.0
 # Technical indicators
 ta>=0.10.0
 
-# Sentiment analysis
-transformers>=4.35.0
-torch>=2.0.0
-torchvision>=0.15.0
+# Sentiment analysis (lightweight, lexicon-based - low memory footprint).
+# FinBERT (transformers + torch) is optional and NOT installed by default: it
+# adds several hundred MB+ of resident memory once loaded, which is enough to
+# push memory-capped deployments (e.g. Streamlit Community Cloud's ~1GB limit)
+# over the edge. See requirements-finbert.txt to opt in for local/CLI use.
 textblob>=0.17.0
 vaderSentiment>=3.3.2
 
