@@ -10,7 +10,7 @@ Multi‑factor stock screener with sentiment analysis, technical indicators, and
 
 - S&P 500 universe selection with market cap/volume filters
 - Technical indicators (RSI, MACD, Bollinger Bands, etc.)
-- Ensemble sentiment analysis (FinBERT + VADER + TextBlob)
+- Ensemble sentiment analysis (VADER + TextBlob by default; optional FinBERT)
 - Pluggable factor scoring system
 - Historical backtesting with rebalancing
 - Interactive Streamlit dashboard
@@ -57,6 +57,33 @@ pytest
 
 Tests run automatically on every push and pull request via GitHub Actions
 (`.github/workflows/ci.yml`).
+
+## Sentiment models: memory footprint
+
+By default, sentiment analysis uses **VADER + TextBlob** — lightweight,
+lexicon-based models with no ML weights to download or hold in memory. This
+keeps the app safe to run on memory-capped deployments (e.g. Streamlit
+Community Cloud's ~1GB limit).
+
+**FinBERT** (`sentiment/finbert_model.py`) is more accurate on financial-domain
+text but pulls in `transformers` + `torch`, adding several hundred MB+ of
+resident memory once loaded — enough to push a capped deployment over its
+limit. It's optional and off by default:
+
+```bash
+pip install -r requirements.txt -r requirements-finbert.txt
+```
+
+```python
+from sentiment import FinBERTModel, VADERModel, TextBlobModel, EnsembleSentiment
+sentiment_model = EnsembleSentiment(
+    models=[FinBERTModel, VADERModel, TextBlobModel],
+    weights=[0.5, 0.3, 0.2],
+)
+```
+
+Only use this for local/CLI runs where memory isn't constrained, not for the
+deployed Streamlit app.
 
 ## License
 
