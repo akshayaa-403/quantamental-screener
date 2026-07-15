@@ -2,7 +2,7 @@
 
 Multi‑factor stock screener with sentiment analysis, technical indicators, and Redis caching.
 
-![Python](https://img.shields.io/badge/Python-3.7%2B-blue)
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Status](https://img.shields.io/badge/Status-Active-brightgreen)
 
@@ -38,6 +38,26 @@ python app.py --top-n 10
 # Or launch web dashboard
 streamlit run streamlit_app.py
 ```
+
+## Configuration
+
+All settings are read from environment variables (see `.env.example` for the full
+list). Factor weights, universe size, backtest parameters, Redis, and API keys are
+configured via `FACTOR_*`, `UNIVERSE_*`, `BACKTEST_*`, `REDIS_*`, and the API-key
+variables. Sentiment analysis uses real news by default; set
+`USE_MOCK_SENTIMENT=true` for a deterministic offline demo.
+
+## Development
+
+```bash
+# Install the lightweight test dependencies and run the suite
+pip install -r requirements-dev.txt
+pytest
+```
+
+Tests run automatically on every push and pull request via GitHub Actions
+(`.github/workflows/ci.yml`).
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

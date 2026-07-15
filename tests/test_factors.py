@@ -1,151 +1,103 @@
-"""
-Unit tests for all factor implementations.
+"""Unit tests for the factor implementations.
+
+Factors operate on a ``(Ticker, Date)`` MultiIndex and return one value per row
+(the score for that ticker on that date), so the tests assert on the full index
+rather than on a single value per ticker.
 """
 
-import pytest
-import pandas as pd
 import numpy as np
-from factors import MomentumFactor, SentimentFactor, VolumeFactor, VolatilityFactor
+import pandas as pd
+import pytest
+
+from factors import MomentumFactor, SentimentFactor, VolatilityFactor, VolumeFactor
+from factors.my_factor import MyFactor
+
+
+def _single_ticker(closes, ticker="AAA", volume=1_000_000):
+    dates = pd.date_range("2024-01-01", periods=len(closes), freq="B")
+    idx = pd.MultiIndex.from_product([[ticker], dates], names=["Ticker", "Date"])
+    return pd.DataFrame({"Close": np.asarray(closes, dtype=float), "Volume": volume}, index=idx)
 
 
 class TestMomentumFactor:
-    """Test MomentumFactor calculations."""
-    
-    def setup_method(self):
-        self.factor = MomentumFactor()
-        self.mock_data = self._create_mock_price_data()
-    
-    def test_compute_returns_series(self):
-        """Test that compute returns a pandas Series."""
-        result = self.factor.compute(self.mock_data)
+    def test_returns_series_over_full_index(self, price_data):
+        data = price_data(["AAPL", "MSFT"], periods=40)
+        result = MomentumFactor().compute(data)
         assert isinstance(result, pd.Series)
-        assert len(result) == 2  # AAPL, MSFT
-    
-    def test_normalize(self):
-        """Test normalization function."""
-        scores = pd.Series([-0.5, 0, 0.5])
-        normalized = self.factor.normalize(scores)
-        assert normalized.min() >= -1
-        assert normalized.max() <= 1
-    
-    def _create_mock_price_data(self):
-        """Create mock price data with sufficient history."""
-        dates = pd.date_range('2024-01-01', '2024-02-01', freq='D')
-        tickers = ['AAPL', 'MSFT']
-        
-        data = []
-        for ticker in tickers:
-            base_price = 150 if ticker == 'AAPL' else 300
-            for i, date in enumerate(dates):
-                data.append({
-                    'Ticker': ticker,
-                    'Date': date,
-                    'Open': base_price + i,
-                    'High': base_price + i + 1,
-                    'Low': base_price + i - 1,
-                    'Close': base_price + i,
-                    'Volume': 1000000
-                })
-        
-        df = pd.DataFrame(data)
-        df.set_index(['Ticker', 'Date'], inplace=True)
-        return df
+        assert result.index.equals(data.index)
+        assert not result.isna().any()
+
+    def test_rejects_non_multiindex(self):
+        with pytest.raises(ValueError):
+            MomentumFactor().compute(pd.DataFrame({"Close": [1, 2, 3]}))
+
+    def test_positive_momentum_for_rising_prices(self):
+        data = _single_ticker(np.arange(100, 130))  # strictly increasing
+        result = MomentumFactor().compute(data)
+        assert result.iloc[-1] > 0
+
+
+class TestNormalize:
+    def test_maps_extremes_to_unit_range(self):
+        norm = MomentumFactor().normalize(pd.Series([-5.0, 0.0, 3.0, 10.0]))
+        assert norm.min() >= -1 and norm.max() <= 1
+        assert norm.iloc[0] == pytest.approx(-1.0)
+        assert norm.iloc[-1] == pytest.approx(1.0)
+
+    def test_constant_series_is_zero(self):
+        norm = MomentumFactor().normalize(pd.Series([2.0, 2.0, 2.0]))
+        assert (norm == 0.0).all()
 
 
 class TestSentimentFactor:
-    """Test SentimentFactor."""
-    
-    def test_compute_with_sentiment_scores(self):
-        """Test that sentiment factor uses passed sentiment scores."""
-        factor = SentimentFactor()
-        mock_data = pd.DataFrame()
-        sentiment_scores = {'AAPL': {'score': 0.8}, 'MSFT': {'score': -0.2}}
-        
-        result = factor.compute(mock_data, sentiment_scores=sentiment_scores)
-        
-        assert result['AAPL'] == 0.8
-        assert result['MSFT'] == -0.2
-    
-    def test_compute_without_sentiment(self):
-        """Test default behavior when no sentiment scores provided."""
-        factor = SentimentFactor()
-        mock_data = pd.DataFrame(index=pd.MultiIndex.from_tuples([('AAPL', '2024-01-01')], names=['Ticker', 'Date']))
-        
-        result = factor.compute(mock_data)
-        assert result['AAPL'] == 0.0
+    def test_broadcasts_scores_across_dates(self):
+        dates = pd.date_range("2024-01-01", periods=3, freq="B")
+        idx = pd.MultiIndex.from_product([["AAPL", "MSFT"], dates], names=["Ticker", "Date"])
+        data = pd.DataFrame(index=idx)
+        scores = {"AAPL": {"score": 0.8}, "MSFT": {"score": -0.2}}
+
+        result = SentimentFactor().compute(data, sentiment_scores=scores)
+
+        assert (result.xs("AAPL", level="Ticker") == 0.8).all()
+        assert (result.xs("MSFT", level="Ticker") == -0.2).all()
+
+    def test_missing_scores_default_to_zero(self):
+        dates = pd.date_range("2024-01-01", periods=2, freq="B")
+        idx = pd.MultiIndex.from_product([["AAPL"], dates], names=["Ticker", "Date"])
+        result = SentimentFactor().compute(pd.DataFrame(index=idx))
+        assert (result == 0.0).all()
 
 
 class TestVolumeFactor:
-    """Test VolumeFactor calculations."""
-    
-    def test_compute_volume_ratio(self):
-        """Test volume ratio calculation."""
-        factor = VolumeFactor()
-        mock_data = self._create_mock_volume_data()
-        result = factor.compute(mock_data)
-        
+    def test_returns_series_over_full_index(self, price_data):
+        data = price_data(["AAPL"], periods=40)
+        result = VolumeFactor().compute(data)
         assert isinstance(result, pd.Series)
-        assert result.index[0] in ['AAPL', 'MSFT']
-    
-    def _create_mock_volume_data(self):
-        """Create mock data with varying volumes."""
-        dates = pd.date_range('2024-01-01', '2024-01-30', freq='D')
-        tickers = ['AAPL']
-        
-        data = []
-        for i, date in enumerate(dates):
-            # Increasing volume over time
-            volume = 1000000 + (i * 50000)
-            data.append({
-                'Ticker': 'AAPL',
-                'Date': date,
-                'Open': 150,
-                'High': 151,
-                'Low': 149,
-                'Close': 150,
-                'Volume': volume
-            })
-        
-        df = pd.DataFrame(data)
-        df.set_index(['Ticker', 'Date'], inplace=True)
-        return df
+        assert result.index.equals(data.index)
+        assert not result.isna().any()
 
 
 class TestVolatilityFactor:
-    """Test VolatilityFactor calculations."""
-    
-    def test_higher_volatility_yields_lower_score(self):
-        """Test that higher volatility produces lower (worse) scores."""
-        factor = VolatilityFactor()
-        
-        dates = pd.date_range('2024-01-01', '2024-02-01', freq='D')
-        
-        data = []
-        for date in dates:
-            data.append({
-                'Ticker': 'LOW_VOL',
-                'Date': date,
-                'Open': 100,
-                'High': 101,
-                'Low': 99,
-                'Close': 100 + np.random.normal(0, 0.5),
-                'Volume': 1000000
-            })
-        
-        for date in dates:
-            data.append({
-                'Ticker': 'HIGH_VOL',
-                'Date': date,
-                'Open': 100,
-                'High': 105,
-                'Low': 95,
-                'Close': 100 + np.random.normal(0, 3),
-                'Volume': 1000000
-            })
-        
-        df = pd.DataFrame(data)
-        df.set_index(['Ticker', 'Date'], inplace=True)
-        
-        result = factor.compute(df)
-        
-        assert result['LOW_VOL'] > result['HIGH_VOL']
+    def test_lower_volatility_scores_higher(self):
+        rng = np.random.default_rng(123)
+        low = 100 + np.cumsum(rng.normal(0, 0.2, size=40))
+        high = 100 + np.cumsum(rng.normal(0, 3.0, size=40))
+        dates = pd.date_range("2024-01-01", periods=40, freq="B")
+        frames = []
+        for ticker, close in [("LOW_VOL", low), ("HIGH_VOL", high)]:
+            df = pd.DataFrame({"Close": close, "Volume": 1_000_000})
+            df["Ticker"] = ticker
+            df["Date"] = dates
+            frames.append(df)
+        data = pd.concat(frames, ignore_index=True).set_index(["Ticker", "Date"]).sort_index()
+
+        result = VolatilityFactor().compute(data)
+
+        low_score = result.xs("LOW_VOL", level="Ticker").mean()
+        high_score = result.xs("HIGH_VOL", level="Ticker").mean()
+        assert low_score > high_score
+
+
+class TestMyFactor:
+    def test_disabled_by_default(self):
+        assert MyFactor().weight == 0.0

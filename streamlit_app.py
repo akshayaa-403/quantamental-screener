@@ -302,9 +302,12 @@ def main():
                 if 'portfolio_series' in backtest and 'benchmark_series' in backtest:
                     port_series = backtest['portfolio_series']
                     bench_series = backtest['benchmark_series']
-                    # Normalize to 100 for comparison
-                    port_norm = port_series / port_series.iloc[0] * 100
-                    bench_norm = bench_series / bench_series.iloc[0] * 100
+                    # Normalize to 100 off the TRUE starting capital (not the
+                    # first plotted point) so the curve's endpoint matches the
+                    # reported Strategy/Benchmark Return metrics exactly.
+                    base = backtest.get('initial_capital', port_series.iloc[0])
+                    port_norm = port_series / base * 100
+                    bench_norm = bench_series / base * 100
                     df_plot = pd.DataFrame({
                         'Strategy': port_norm,
                         'Benchmark': bench_norm

@@ -38,6 +38,7 @@ class BacktestSettings(BaseSettings):
     period: str = "1y"
     rebalance_freq: int = 5  # days
     top_n_stocks: int = 10
+    risk_free_rate: float = 0.0  # annualized; used in the Sharpe ratio
 
 class Settings(BaseSettings):
     """Main settings class that aggregates all sub-settings."""

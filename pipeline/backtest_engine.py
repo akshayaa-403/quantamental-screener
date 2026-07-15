@@ -17,6 +17,8 @@ class BacktestEngine:
         self.top_n = config.get('top_n', settings.backtest.top_n_stocks)
         self.initial_capital = config.get('initial_capital', 1_000_000)
         self.benchmark_ticker = config.get('benchmark', 'SPY')
+        # Annualized risk-free rate used in the Sharpe ratio (0.0 = none).
+        self.risk_free_rate = config.get('risk_free_rate', settings.backtest.risk_free_rate)
 
     @retry_on_network_error
     def _fetch_benchmark(self, start_date, end_date) -> pd.Series:
@@ -200,8 +202,13 @@ class BacktestEngine:
         benchmark_total_return = (bench_series.iloc[-1] / self.initial_capital) - 1
         excess_return = total_return - benchmark_total_return
 
+        # Annualized Sharpe ratio with a configurable risk-free rate.
+        # Sharpe = mean(excess daily return) / std(daily return) * sqrt(252),
+        # where the excess return subtracts the per-day risk-free rate.
+        rf_daily = self.risk_free_rate / 252
+        excess_returns = port_returns - rf_daily
         if port_returns.std() != 0:
-            sharpe = port_returns.mean() / port_returns.std() * np.sqrt(252)
+            sharpe = excess_returns.mean() / port_returns.std() * np.sqrt(252)
         else:
             sharpe = 0.0
 
@@ -225,6 +232,7 @@ class BacktestEngine:
             'volatility': volatility,
             'hit_rate': hit_rate,
             'final_value': port_series.iloc[-1],
+            'initial_capital': self.initial_capital,
             'portfolio_series': port_series,
             'benchmark_series': bench_series,
         }

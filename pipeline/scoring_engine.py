@@ -29,8 +29,8 @@ class ScoringEngine:
                 
                 if raw.index.names[0] != 'Ticker' or raw.index.names[1] != 'Date':
                     raw.index.set_names(['Ticker', 'Date'], inplace=True)
-                # Group by the second level (date) and apply normalization
-                normalized = raw.groupby(level=1).transform(self._normalize_series)
+                # Group by the second level (date) and standardize cross-sectionally
+                normalized = raw.groupby(level=1).transform(self._standardize_series)
             else:
                 normalized = factor.normalize(raw)
 
@@ -51,13 +51,22 @@ class ScoringEngine:
         return combined
 
     @staticmethod
-    def _normalize_series(s: pd.Series) -> pd.Series:
-        
+    def _standardize_series(s: pd.Series) -> pd.Series:
+        """Cross-sectional z-score standardization: (x - mean) / std.
+
+        Standardization is the standard choice for multi-factor models: unlike
+        min-max scaling it is not distorted by a single outlier stock, and it
+        puts every factor on a common mean-0 / unit-variance scale so the
+        configured weights are directly comparable. Scores are clipped to +/-3
+        to cap the influence of extreme outliers. A degenerate (constant or
+        empty) cross-section maps to 0.
+        """
         clean = s.dropna()
         if clean.empty:
             return pd.Series(0.0, index=s.index)
-        min_val = clean.min()
-        max_val = clean.max()
-        if max_val == min_val:
+        mean = clean.mean()
+        std = clean.std(ddof=0)
+        if std == 0 or pd.isna(std):
             return pd.Series(0.0, index=s.index)
-        return (s - min_val) / (max_val - min_val) * 2 - 1
+        z = (s - mean) / std
+        return z.clip(-3, 3).fillna(0.0)
