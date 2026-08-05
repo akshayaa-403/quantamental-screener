@@ -170,7 +170,7 @@ def render_sidebar():
         )
 
         st.divider()
-        run_button = st.button("🚀 Run Screener", type="primary", width="stretch")
+        run_button = st.button("Run Screener", type="primary", width="stretch")
         st.caption("Results are cached for 5 minutes.")
 
     return universe_size, start_date, end_date, weights, use_mock_sentiment, run_button
@@ -320,7 +320,7 @@ def render_backtest(backtest):
         )
         st.plotly_chart(fig, width="stretch")
 
-    st.caption("💡 Weekly rebalancing into the top-ranked names. Benchmark: S&P 500 (SPY).")
+    st.caption("Weekly rebalancing into the top-ranked names. Benchmark: S&P 500 (SPY).")
 
 
 def render_deep_dive(scores_df, price_data, results):
@@ -376,7 +376,7 @@ def render_deep_dive(scores_df, price_data, results):
 
 
 def render_empty_state():
-    st.info("👈 Configure your screen in the sidebar, then click **Run Screener** to begin.")
+    st.info("⟵ Configure your screen in the sidebar, then click **Run Screener** to begin.")
     with st.container(border=True):
         st.markdown("#### How it works")
         st.markdown(
@@ -392,7 +392,7 @@ def main():
     st.markdown(
         """
 <div class="hero">
-    <h1>📈 Quantamental Equity Screener</h1>
+    <h1>Quantamental Equity Screener</h1>
     <p>Multi-factor analysis combining technical indicators, sentiment, and risk.</p>
 </div>
 """,
