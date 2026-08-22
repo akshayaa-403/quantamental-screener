@@ -22,7 +22,6 @@ class DataCollector(CacheMixin):
 
         price_data = self.data_source.get_price_data(tickers, start_date, end_date)
 
-        # Flatten MultiIndex columns if present (e.g., from Yahoo Finance)
         if isinstance(price_data.columns, pd.MultiIndex):
             price_data.columns = ['_'.join(col).strip() for col in price_data.columns.values]
 
