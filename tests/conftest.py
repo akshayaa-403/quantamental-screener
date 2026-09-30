@@ -1,13 +1,3 @@
-"""Shared pytest fixtures.
-
-Provides deterministic, network-free building blocks for the test suite:
-- ``fake_cache``: a ``CacheClient`` backed by in-memory ``FakeStrictRedis`` with
-  caching enabled, so the real get/set/delete logic can be exercised (the
-  default client short-circuits when Redis is disabled).
-- ``price_data``: a factory that builds synthetic OHLCV data with the
-  ``(Ticker, Date)`` MultiIndex that the factors and pipeline expect.
-"""
-
 import numpy as np
 import pandas as pd
 import pytest
