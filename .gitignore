@@ -21,6 +21,7 @@ redis_data/
 *.csv
 *.html
 *.png
+!docs/*.png
 *.json
 screener_config.json
 top_stocks_recommendations.csv
