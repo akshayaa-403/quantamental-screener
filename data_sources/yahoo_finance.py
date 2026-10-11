@@ -2,8 +2,7 @@ import yfinance as yf
 from newsapi import NewsApiClient
 import os
 import pandas as pd
-from typing import List, Dict
-from core.data_source import DataSource
+from typing import List
 from core.cache_mixin import CacheMixin
 from tqdm import tqdm
 import logging
@@ -12,63 +11,36 @@ from utils.logging_utils import retry_on_network_error
 
 logger = logging.getLogger(__name__)
 
-class YahooFinanceSource(DataSource, CacheMixin):
+class YahooFinanceSource(CacheMixin):
     def __init__(self):
         CacheMixin.__init__(self)
 
     @retry_on_network_error
     def get_price_data(self, tickers: List[str], start: str, end: str) -> pd.DataFrame:
         """
-        Fetch price data for multiple tickers from Yahoo Finance.
-        Retries up to 3 times on network errors.
+        Fetch daily OHLCV from Yahoo Finance, indexed by (Ticker, Date).
+        Prices are split- and dividend-adjusted, so returns are total returns
+        like the benchmark's. Retries up to 3 times on network errors.
         """
         all_dfs = []
-        min_required_days = 21
 
         for ticker in tqdm(tickers, desc="Downloading price data"):
             try:
-                stock = yf.Ticker(ticker)
-                df = stock.history(start=start, end=end, auto_adjust=False)
+                df = yf.Ticker(ticker).history(start=start, end=end, auto_adjust=True)
                 if df.empty:
                     logger.warning(f"No data for {ticker}")
                     continue
 
-                if len(df) < min_required_days:
-                    # Try extending start date to get more data
-                    extended_start = pd.to_datetime(start) - pd.DateOffset(months=3)
-                    df = stock.history(start=extended_start.strftime('%Y-%m-%d'), end=end, auto_adjust=False)
-                    if len(df) < min_required_days:
-                        logger.warning(f"{ticker} insufficient data ({len(df)} rows). Skipping.")
-                        continue
-
                 df = df.reset_index()
-                # Standardize column names
-                df.rename(columns={
-                    'Date': 'Date',
-                    'Open': 'Open',
-                    'High': 'High',
-                    'Low': 'Low',
-                    'Close': 'Close',
-                    'Volume': 'Volume'
-                }, inplace=True)
-
                 df['Ticker'] = ticker
-                df = df[['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'Ticker']]
-                all_dfs.append(df)
+                all_dfs.append(df[['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'Ticker']])
 
             except Exception as e:
-                logger.error(f"Failed to download {ticker}: {e}", exc_info=True)
-                # Let the retry decorator handle it if it's a network issue,
-                # but we might still want to continue with other tickers.
-                # Since we catch all, we don't re-raise; we just skip this ticker.
-                # If we want the whole operation to retry on network errors, 
-                # we should not catch requests exceptions here.
-                # Instead, we catch only non-network errors.
-                # For simplicity, we'll re-raise network-related exceptions
-                # so that the retry decorator can act on the whole method.
+                # Network errors restart the whole download via the retry
+                # decorator; anything else skips this ticker.
                 if isinstance(e, (requests.RequestException, ConnectionError, TimeoutError)):
                     raise
-                # Otherwise, log and continue
+                logger.error(f"Failed to download {ticker}: {e}", exc_info=True)
 
         if not all_dfs:
             logger.error("No price data downloaded for any ticker.")
@@ -82,32 +54,6 @@ class YahooFinanceSource(DataSource, CacheMixin):
         logger.info(f"Success: {len(combined.index.get_level_values('Ticker').unique())} tickers, shape {combined.shape}")
         return combined
 
-    def get_fundamentals(self, ticker: str) -> Dict:
-        """
-        Fetch fundamental data from Yahoo Finance info.
-        Cached for 24 hours.
-        """
-        cache_key = self._cache_key("fundamental", ticker=ticker)
-        cached = self._cache.get(cache_key)
-        if cached:
-            return cached
-
-        try:
-            stock = yf.Ticker(ticker)
-            info = stock.info
-            fundamentals = {
-                'market_cap': info.get('marketCap', 0),
-                'pe_ratio': info.get('trailingPE', 0),
-                'revenue_growth': info.get('revenueGrowth', 0),
-                'sector': info.get('sector', 'Unknown'),
-                'industry': info.get('industry', 'Unknown'),
-            }
-            self._cache.set(cache_key, fundamentals, ttl=86400)
-            return fundamentals
-        except Exception as e:
-            logger.error(f"Error fetching fundamentals for {ticker}: {e}", exc_info=True)
-            return {}
-
     @retry_on_network_error
     def get_news_headlines(self, ticker: str, lookback_days: int = 7) -> List[str]:
         """
@@ -117,7 +63,7 @@ class YahooFinanceSource(DataSource, CacheMixin):
         """
         cache_key = self._cache_key("news", ticker=ticker, lookback=lookback_days)
         cached = self._cache.get(cache_key)
-        if cached:
+        if cached is not None:
             return cached
 
         headlines = []

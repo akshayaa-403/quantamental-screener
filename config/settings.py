@@ -1,7 +1,5 @@
 from functools import lru_cache
-from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import Optional
 
 class RedisSettings(BaseSettings):
     """Redis configuration - reads from REDIS_* environment variables"""
@@ -11,8 +9,6 @@ class RedisSettings(BaseSettings):
     enabled: bool = False
     ttl_default: int = 3600
     ttl_price: int = 14400      # 4 hours
-    ttl_sentiment: int = 604800 # 7 days
-    ttl_factor: int = 86400     # 1 day
 
 class UniverseSettings(BaseSettings):
     """Universe configuration - reads from UNIVERSE_* environment variables"""
@@ -39,6 +35,20 @@ class BacktestSettings(BaseSettings):
     rebalance_freq: int = 5  # days
     top_n_stocks: int = 10
     risk_free_rate: float = 0.0  # annualized; used in the Sharpe ratio
+    transaction_cost_bps: float = 10.0  # cost per trade, in basis points of notional
+    n_bootstrap: int = 2000  # random portfolios drawn for the significance test
+
+# Calendar days of history fetched before the backtest window for factor
+# warm-up: 252 trading days of 12-minus-1 momentum plus a holiday margin.
+WARMUP_DAYS = 400
+
+def period_to_days(period: str) -> int:
+    """Convert a yfinance-style period ('6mo', '1y', '90d', '2wk') to calendar days."""
+    period = period.strip().lower()
+    for suffix, days in (('mo', 30), ('wk', 7), ('y', 365), ('d', 1)):
+        if period.endswith(suffix):
+            return int(float(period[: -len(suffix)]) * days)
+    raise ValueError(f"Unrecognized period: {period!r}")
 
 class Settings(BaseSettings):
     """Main settings class that aggregates all sub-settings."""
@@ -53,10 +63,6 @@ class Settings(BaseSettings):
     weights: FactorWeights = FactorWeights()
     backtest: BacktestSettings = BacktestSettings()
     
-    finnhub_api_key: Optional[str] = None
-    alpha_vantage_api_key: Optional[str] = None
-    polygon_api_key: Optional[str] = None
-
 @lru_cache()
 def get_settings() -> Settings:
     return Settings()

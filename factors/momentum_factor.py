@@ -1,28 +1,27 @@
 import pandas as pd
-import numpy as np
 from core.factor import Factor
 
 class MomentumFactor(Factor):
     name = "momentum"
-    
+
+    def __init__(self, lookback: int = 252, skip: int = 21):
+        """
+        12-minus-1 momentum by default: the return from ``lookback`` trading
+        days ago to ``skip`` trading days ago. The most recent month is skipped
+        because one-month returns tend to reverse (short-term reversal), which
+        would otherwise work against the momentum signal.
+        """
+        if skip >= lookback:
+            raise ValueError("skip must be smaller than lookback")
+        self.lookback = lookback
+        self.skip = skip
+
     def compute(self, data: pd.DataFrame, **kwargs) -> pd.Series:
         """
-        Compute momentum as the 21-day rate of change (ROC) for each ticker.
-        Returns raw ROC values (e.g., 0.05 for 5% gain) as a Series with the same index as data.
+        Return the raw ``lookback``-minus-``skip`` return per (Ticker, Date).
+        Rows without ``lookback`` days of history are NaN (warm-up), not 0.
         """
-        if not isinstance(data.index, pd.MultiIndex) or data.index.names != ['Ticker', 'Date']:
-            raise ValueError("Data index must be MultiIndex with levels ['Ticker', 'Date']")
-        
-        if 'Close' not in data.columns:
-            raise ValueError("Data must contain 'Close' column")
-        
-        result = pd.Series(index=data.index, dtype=float)
-        for ticker, group in data.groupby(level='Ticker'):
-            group = group.sort_index(level='Date')
-            close = group['Close']
-            # 21-day rate of change
-            roc = close / close.shift(21) - 1
-            # Fill NaN with 0 for early dates
-            roc = roc.fillna(0)
-            result.loc[group.index] = roc
-        return result
+        self._validate(data, 'Close')
+        close = data['Close'].sort_index().groupby(level='Ticker')
+        momentum = close.shift(self.skip) / close.shift(self.lookback) - 1
+        return momentum.reindex(data.index)

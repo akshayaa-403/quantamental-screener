@@ -4,26 +4,22 @@ from core.factor import Factor
 
 class VolumeFactor(Factor):
     name = "volume"
+
+    def __init__(self, window: int = 20):
+        self.window = window
     
     def compute(self, data: pd.DataFrame, **kwargs) -> pd.Series:
         """
-        Compute volume ratio: current volume / 20-day average volume.
-        Returns raw ratio (e.g., 1.5 means 50% above average) as a Series with same index as data.
+        Signed relative volume: (volume / ``window``-day average volume) times
+        the sign of that day's return. Heavy buying scores high, heavy selling
+        scores low; raw volume alone would rank a panic sell-off as highly as
+        buying enthusiasm. Rows without a full window are NaN (warm-up).
         """
-        if not isinstance(data.index, pd.MultiIndex) or data.index.names != ['Ticker', 'Date']:
-            raise ValueError("Data index must be MultiIndex with levels ['Ticker', 'Date']")
-        
-        if 'Volume' not in data.columns:
-            raise ValueError("Data must contain 'Volume' column")
-        
-        result = pd.Series(index=data.index, dtype=float)
-        for ticker, group in data.groupby(level='Ticker'):
-            group = group.sort_index(level='Date')
-            vol = group['Volume']
-            avg_vol = vol.rolling(20).mean()
-            # Avoid division by zero
-            ratio = vol / avg_vol.where(avg_vol != 0, np.nan)
-            # Fill NaN with 1 (ratio of 1 when insufficient data)
-            ratio = ratio.fillna(1)
-            result.loc[group.index] = ratio
-        return result
+        self._validate(data, 'Close')
+        self._validate(data, 'Volume')
+        ordered = data.sort_index()
+        by_ticker = ordered.groupby(level='Ticker')
+        avg_vol = by_ticker['Volume'].transform(lambda v: v.rolling(self.window).mean())
+        ratio = ordered['Volume'] / avg_vol.where(avg_vol != 0)
+        direction = np.sign(by_ticker['Close'].pct_change())
+        return (ratio * direction).reindex(data.index)

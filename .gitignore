@@ -28,5 +28,6 @@ all_stock_scores.csv
 
 # IDE
 .vscode/
+.claude/
 .idea/
 *.swp

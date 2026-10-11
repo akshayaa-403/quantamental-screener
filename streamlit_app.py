@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 from datetime import datetime, timedelta
-from config.settings import get_settings
+from config.settings import get_settings, WARMUP_DAYS
 from data_sources.yahoo_finance import YahooFinanceSource
 from sentiment.ensemble_sentiment import EnsembleSentiment
 from factors import MomentumFactor, SentimentFactor, VolumeFactor, VolatilityFactor
@@ -77,16 +77,13 @@ def run_screener(universe_size, start_date, end_date, weights, use_mock_sentimen
     """Run the complete screener pipeline with caching."""
     data_source, sentiment_model, factors = load_components()
 
-    # Update factor weights on the (cached) factor instances.
-    for factor in factors:
-        if factor.name in weights:
-            factor.weight = weights[factor.name]
-
     # Universe selection
     tickers = UniverseSelector({"size": universe_size}).select()
 
-    # Data collection
-    price_data = DataCollector(data_source).collect(tickers, start_date, end_date)
+    # Data collection: WARMUP_DAYS of extra history before the chosen start so
+    # 12-minus-1 momentum can score from the first day of the backtest.
+    data_start = (pd.Timestamp(start_date) - pd.Timedelta(days=WARMUP_DAYS)).strftime("%Y-%m-%d")
+    price_data = DataCollector(data_source).collect(tickers, data_start, end_date)
 
     if use_mock_sentiment:
         # Seeded mock sentiment: fast, offline, reproducible.
@@ -94,7 +91,7 @@ def run_screener(universe_size, start_date, end_date, weights, use_mock_sentimen
         tickers_in_data = price_data.index.get_level_values("Ticker").unique()
         sentiment_scores = {t: {"score": float(rng.uniform(-0.8, 0.8))} for t in tickers_in_data}
     else:
-        # Real sentiment for the first 20 tickers; missing names stay neutral (0.0).
+        # Real sentiment for the first 20 tickers; missing names are scored neutral.
         limited_tickers = tickers[: min(20, len(tickers))]
         news_by_ticker = {}
         for ticker in limited_tickers:
@@ -103,23 +100,26 @@ def run_screener(universe_size, start_date, end_date, weights, use_mock_sentimen
                 news_by_ticker[ticker] = headlines
         sentiment_scores = sentiment_model.batch_analyze(news_by_ticker) if news_by_ticker else {}
 
-    # Scoring
-    scorer = ScoringEngine(factors)
-    scores_df = scorer.compute(price_data, sentiment_scores, cross_sectional_normalize=True)
+    # Scoring. The engine keeps its own copy of the weights, so the cached
+    # factor instances are never mutated between runs.
+    scorer = ScoringEngine(factors, weights=weights)
+    scores_df = scorer.compute(price_data, sentiment_scores)
 
-    # Backtest
-    backtest_results = BacktestEngine().run(scorer, price_data, sentiment_scores)
+    # Backtest without sentiment: today's news on past dates is lookahead.
+    backtest_results = BacktestEngine().run(scorer, price_data, sentiment_scores=None, start_date=start_date)
 
     return scores_df, price_data, backtest_results, sentiment_scores
 
 
 def render_sidebar():
     """Render the configuration sidebar and return the chosen settings."""
+    settings = get_settings()
+    default_w = settings.weights
     with st.sidebar:
         st.header("⚙️ Configuration")
 
         st.subheader("Universe")
-        universe_size = st.slider("Number of stocks to analyze", 10, 100, 50, 10)
+        universe_size = st.slider("Number of stocks to analyze", 10, 100, settings.universe.size, 10)
 
         st.subheader("Analysis period")
         today = datetime.now().date()
@@ -129,11 +129,11 @@ def render_sidebar():
         st.subheader("Factor weights")
         c1, c2 = st.columns(2)
         with c1:
-            momentum_w = st.slider("Momentum", 0.0, 1.0, 0.4, 0.05)
-            sentiment_w = st.slider("Sentiment", 0.0, 1.0, 0.3, 0.05)
+            momentum_w = st.slider("Momentum", 0.0, 1.0, default_w.momentum, 0.05)
+            sentiment_w = st.slider("Sentiment", 0.0, 1.0, default_w.sentiment, 0.05)
         with c2:
-            volume_w = st.slider("Volume", 0.0, 1.0, 0.2, 0.05)
-            volatility_w = st.slider("Volatility", 0.0, 1.0, 0.1, 0.05)
+            volume_w = st.slider("Volume", 0.0, 1.0, default_w.volume, 0.05)
+            volatility_w = st.slider("Volatility", 0.0, 1.0, default_w.volatility, 0.05)
 
         total = momentum_w + sentiment_w + volume_w + volatility_w
         if total > 0:
@@ -144,7 +144,7 @@ def render_sidebar():
                 "volatility": volatility_w / total,
             }
         else:
-            weights = {"momentum": 0.4, "sentiment": 0.3, "volume": 0.2, "volatility": 0.1}
+            weights = {c: getattr(default_w, c) for c in FACTOR_COLS}
 
         # Live preview of the normalized weights the screen will actually use.
         st.caption("Normalized weights (sum = 100%)")
@@ -284,6 +284,7 @@ def render_backtest(backtest):
     hit = backtest.get("hit_rate", 0) * 100
     final = backtest.get("final_value", 0)
     init = backtest.get("initial_capital", 0)
+    p_value = backtest.get("p_value", float("nan"))
 
     with st.container(border=True):
         r1 = st.columns(4)
@@ -296,7 +297,18 @@ def render_backtest(backtest):
         r2[0].metric("Max drawdown", f"{mdd:.2f}%", help="Worst peak-to-trough loss")
         r2[1].metric("Volatility (ann.)", f"{vol:.2f}%")
         r2[2].metric("Final value", f"${final:,.0f}", delta=f"${final - init:,.0f}")
-        r2[3].metric("Excess return", f"{er:+.2f}%")
+        r2[3].metric(
+            "p-value (selection)",
+            "n/a" if pd.isna(p_value) else f"{p_value:.3f}",
+            help="Share of random portfolios, drawn from the same eligible names at each "
+            "rebalance, that did at least as well as the strategy's picks. Gross of costs.",
+        )
+    st.caption(
+        f"{backtest.get('n_rebalances', 0)} rebalances, trading on the previous day's signal, "
+        f"without sentiment (no point-in-time news history). Costs paid: "
+        f"${backtest.get('total_costs', 0):,.0f}. The universe is today's index members, "
+        "so results carry survivorship bias."
+    )
 
     if "portfolio_series" in backtest and "benchmark_series" in backtest:
         port_series = backtest["portfolio_series"]

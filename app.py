@@ -10,16 +10,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import click
-import pandas as pd
 import numpy as np
-from config.settings import get_settings
+from config.settings import get_settings, period_to_days, WARMUP_DAYS
 from data_sources.yahoo_finance import YahooFinanceSource
 from sentiment.ensemble_sentiment import EnsembleSentiment
 from factors import MomentumFactor, SentimentFactor, VolumeFactor, VolatilityFactor
 from pipeline import UniverseSelector, DataCollector, ScoringEngine, BacktestEngine
 from output import ConsoleReporter
 from utils.logging_utils import setup_logging
-from factors.my_factor import MyFactor
 
 # Basic logging configuration (refined by setup_logging in cli). Kept quiet at
 # import time so `import app` doesn't spam DEBUG output.
@@ -45,52 +43,54 @@ def cli(top_n):
 
     data_source = YahooFinanceSource()
     sentiment_model = EnsembleSentiment()
-    all_factors = [MomentumFactor(), SentimentFactor(), VolumeFactor(), VolatilityFactor(), MyFactor()]
-    # Drop factors with a zero weight (MyFactor is disabled by default).
-    factors = [f for f in all_factors if factor_weights.get(f.name, f.weight) != 0.0]
+    factors = [MomentumFactor(), SentimentFactor(), VolumeFactor(), VolatilityFactor()]
     output = ConsoleReporter()
 
     universe = UniverseSelector()
     collector = DataCollector(data_source)
     scorer = ScoringEngine(factors, weights=factor_weights)
-    backtester = BacktestEngine({'top_n': top_n})
+    backtester = BacktestEngine()  # holds BACKTEST_TOP_N_STOCKS; --top-n is display only
 
     tickers = universe.select()
     logger.info(f"Selected universe: {tickers[:5]}... ({len(tickers)} total)")
 
-    end_date = datetime.date.today().strftime('%Y-%m-%d')
-    start_date = (datetime.date.today() - datetime.timedelta(days=180)).strftime('%Y-%m-%d')
-    price_data = collector.collect(tickers, start_date, end_date)
-
-    # Sentiment (only for first 20 to avoid rate limits)
-    tickers_for_sentiment = tickers[:20]
-    news_by_ticker = {}
-    for t in tickers_for_sentiment:
-        try:
-            headlines = data_source.get_news_headlines(t)
-            if headlines:
-                news_by_ticker[t] = headlines
-        except Exception as e:
-            logger.warning(f"Could not fetch news for {t}: {e}")
-    sentiment_scores = sentiment_model.batch_analyze(news_by_ticker)
+    # The backtest window is BACKTEST_PERIOD; WARMUP_DAYS more history before
+    # it lets 12-minus-1 momentum (252 trading days) score from day one.
+    today = datetime.date.today()
+    backtest_start = today - datetime.timedelta(days=period_to_days(settings.backtest.period))
+    data_start = backtest_start - datetime.timedelta(days=WARMUP_DAYS)
+    price_data = collector.collect(tickers, data_start.strftime('%Y-%m-%d'), today.strftime('%Y-%m-%d'))
 
     # Mock sentiment is opt-in (for demos/offline runs without a news API) via
-    # USE_MOCK_SENTIMENT=true. It is seeded so runs are reproducible. By default
-    # we keep the real sentiment scores; tickers without news contribute a
-    # neutral 0.0 (handled by SentimentFactor), rather than random noise.
+    # USE_MOCK_SENTIMENT=true, seeded so runs are reproducible.
     if os.getenv('USE_MOCK_SENTIMENT', 'false').lower() == 'true':
-        logger.warning("USE_MOCK_SENTIMENT=true: overriding with seeded random mock sentiment (demo mode).")
+        logger.warning("USE_MOCK_SENTIMENT=true: using seeded random mock sentiment (demo mode).")
         rng = np.random.default_rng(42)
         tickers_in_data = price_data.index.get_level_values('Ticker').unique()
         sentiment_scores = {
             t: {'score': float(rng.uniform(-0.8, 0.8))}
             for t in tickers_in_data
         }
-    elif not sentiment_scores:
-        logger.warning("No real sentiment scores available; sentiment factor will contribute neutral (0.0) scores.")
+    else:
+        # Real sentiment for the live ranking only (first 20 names, to stay
+        # inside news API rate limits). Names without news are left out and
+        # scored as neutral by SentimentFactor.
+        news_by_ticker = {}
+        for t in tickers[:20]:
+            try:
+                headlines = data_source.get_news_headlines(t)
+                if headlines:
+                    news_by_ticker[t] = headlines
+            except Exception as e:
+                logger.warning(f"Could not fetch news for {t}: {e}")
+        sentiment_scores = sentiment_model.batch_analyze(news_by_ticker)
+        if not sentiment_scores:
+            logger.warning("No real sentiment scores available; sentiment factor will contribute neutral scores.")
 
-    # Run backtest
-    backtest_results = backtester.run(scorer, price_data, sentiment_scores)
+    # Backtest without sentiment: these scores describe today's news and would
+    # be lookahead on every past date.
+    backtest_results = backtester.run(scorer, price_data, sentiment_scores=None,
+                                      start_date=backtest_start.strftime('%Y-%m-%d'))
     if not backtest_results:
         logger.error("Backtest returned empty results.")
         return
@@ -101,18 +101,8 @@ def cli(top_n):
         logger.error("No scores computed.")
         return
 
-    # Get the most recent date and select top N
     last_date = scores_df.index.get_level_values('Date').max()
-    current_scores = scores_df.xs(last_date, level='Date')
-    top_scores = current_scores.nlargest(top_n, 'composite')
-
-    # Display results
-    output.display_results(
-        top_scores,
-        backtest_results,
-        sector_dist=pd.Series(),
-        factor_corr=pd.DataFrame()
-    )
+    output.display_results(scores_df.xs(last_date, level='Date'), backtest_results, top_n)
 
 if __name__ == "__main__":
     cli()

@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from typing import Dict, Optional, List
+from typing import Dict, Optional
 from config.settings import get_settings
 import logging
 import yfinance as yf
@@ -19,181 +19,138 @@ class BacktestEngine:
         self.benchmark_ticker = config.get('benchmark', 'SPY')
         # Annualized risk-free rate used in the Sharpe ratio (0.0 = none).
         self.risk_free_rate = config.get('risk_free_rate', settings.backtest.risk_free_rate)
+        # Cost charged on the notional of every buy and sell, in basis points.
+        self.cost_rate = config.get('transaction_cost_bps', settings.backtest.transaction_cost_bps) / 1e4
+        # Point-in-time liquidity screen: trailing 20-day average share volume,
+        # known as of the previous close. 0 disables it.
+        self.min_volume = config.get('min_volume', settings.universe.min_volume)
+        self.n_bootstrap = config.get('n_bootstrap', settings.backtest.n_bootstrap)
+        self.seed = config.get('seed', 0)
 
     @retry_on_network_error
     def _fetch_benchmark(self, start_date, end_date) -> pd.Series:
-        bench = yf.download(self.benchmark_ticker, start=start_date, end=end_date, progress=False)
+        # yfinance's end is exclusive; without the extra day the benchmark
+        # misses the backtest's last session. auto_adjust matches the
+        # strategy's dividend-adjusted closes.
+        end = (pd.Timestamp(end_date) + pd.Timedelta(days=1)).strftime('%Y-%m-%d')
+        bench = yf.download(self.benchmark_ticker, start=start_date, end=end,
+                            auto_adjust=True, progress=False)
         if bench.empty:
             logger.warning(f"No benchmark data for {self.benchmark_ticker}")
             return pd.Series(dtype=float)
 
         if isinstance(bench.columns, pd.MultiIndex):
             bench.columns = bench.columns.get_level_values(0)
-
-        if 'Adj Close' in bench.columns:
-            price_series = bench['Adj Close']
-        elif 'Close' in bench.columns:
-            price_series = bench['Close']
-        else:
-            price_series = bench.iloc[:, 0]
-            logger.warning(f"Using '{bench.columns[0]}' as benchmark price")
-
+        price_series = bench['Close']
         if price_series.index.tz is not None:
             price_series.index = price_series.index.tz_localize(None)
-
-        full_range = pd.date_range(start=start_date, end=end_date, freq='B')
-        price_series = price_series.reindex(full_range).ffill().bfill()
         return price_series
 
-    def run(self, scoring_engine, price_data: pd.DataFrame, sentiment_scores: Optional[Dict] = None) -> Dict:
+    def run(self, scoring_engine, price_data: pd.DataFrame, sentiment_scores: Optional[Dict] = None,
+            start_date: Optional[str] = None, end_date: Optional[str] = None) -> Dict:
+        """
+        Simulate trading the scorer's top ``top_n`` names.
+
+        * Signals are lagged one day: the portfolio chosen on day t uses scores
+          computed from data up to the close of t-1, and trades at t's close.
+        * Sentiment is never used. ``sentiment_scores`` is accepted for
+          backwards compatibility and ignored: the scores are a snapshot of
+          today's news, and copying them onto past dates is lookahead.
+        * Trading starts on the first day enough names are out of warm-up.
+          ``start_date`` / ``end_date`` restrict the trading window while still
+          using earlier data for warm-up, e.g. for an out-of-sample period.
+        """
         logger.info("Starting backtest engine...")
         if price_data.empty:
             logger.error("No price data provided.")
             return {}
+        if sentiment_scores:
+            logger.warning("Backtest ignores sentiment_scores: there is no point-in-time sentiment history.")
 
-        logger.info(f"Price data shape: {price_data.shape}")
-        logger.info(f"Price data index levels: {price_data.index.names}")
-        logger.info(f"Price data columns: {price_data.columns.tolist()}")
-
-        # Ensure index is sorted
         price_data = price_data.sort_index()
-
-        # --- FIX: Convert timezone-aware dates to naive ---
         if price_data.index.get_level_values('Date').tz is not None:
-            logger.info("Converting price_data Date index to naive datetime")
             price_data = price_data.reset_index()
             price_data['Date'] = price_data['Date'].dt.tz_localize(None)
-            price_data = price_data.set_index(['Ticker', 'Date'])
-        # -------------------------------------------------
+            price_data = price_data.set_index(['Ticker', 'Date']).sort_index()
 
-        # If no sentiment, zero out sentiment factor weight
-        if sentiment_scores is None:
-            for factor in scoring_engine.factors:
-                if factor.name == 'sentiment':
-                    factor.weight = 0.0
-                    logger.info("Sentiment factor weight set to 0 for backtest (no historical sentiment)")
-        else:
-            logger.info(f"Sentiment scores for {len(sentiment_scores)} tickers")
-
-        # Get all unique dates (trading days) from price_data
-        dates = price_data.index.get_level_values('Date').unique().sort_values()
-        logger.info(f"Unique dates: {len(dates)} from {dates.min()} to {dates.max()}")
-        if len(dates) < 2:
-            logger.warning("Not enough dates for backtest.")
-            return {}
-
-        # Ensure dates are naive (remove timezone if any) – already done above, but just in case
-        if hasattr(dates, 'tz') and dates.tz is not None:
-            dates = dates.tz_localize(None)
-            logger.info("Converted dates to naive datetime.")
-
-        logger.info("Computing composite scores...")
-        scores_df = scoring_engine.compute(price_data, sentiment_scores, cross_sectional_normalize=True)
-        logger.info(f"Scores DataFrame shape: {scores_df.shape}")
+        scores_df = scoring_engine.compute(price_data, None, weights={'sentiment': 0.0})
         if scores_df.empty:
-            logger.warning("Scores DataFrame is empty. Backtest will likely fail.")
+            logger.warning("Scores DataFrame is empty.")
             return {}
 
-        # Benchmark series for the same date range
-        start_date = dates.min().strftime('%Y-%m-%d')
-        end_date = dates.max().strftime('%Y-%m-%d')
-        logger.info(f"Fetching benchmark {self.benchmark_ticker} from {start_date} to {end_date}")
-        bench_series = self._fetch_benchmark(start_date, end_date)
-        logger.info(f"Benchmark series length: {len(bench_series)}")
+        # Trade on yesterday's signal.
+        signal = scores_df['composite'].groupby(level='Ticker').shift(1).unstack('Ticker')
+        raw_close = price_data['Close'].unstack('Ticker')
+        close = raw_close.ffill()  # value a position through a missing print
+        signal = signal.reindex(index=close.index, columns=close.columns)
 
-        bench_aligned = bench_series.reindex(dates).ffill().bfill()
-        if bench_aligned.isna().all():
-            logger.warning("Benchmark data entirely missing. Using flat 0% return.")
-            bench_aligned = pd.Series(1.0, index=dates)
+        eligible = signal.notna() & raw_close.notna()
+        if self.min_volume and 'Volume' in price_data.columns:
+            adv = price_data['Volume'].unstack('Ticker').reindex_like(close)
+            eligible &= adv.rolling(20).mean().shift(1) >= self.min_volume
 
-        # Determine rebalance dates
-        rebalance_indices = list(range(0, len(dates), self.rebalance_freq))
-        if not rebalance_indices:
-            rebalance_indices = [0]
-        logger.info(f"Rebalance indices (first 10): {rebalance_indices[:10]}...")
+        dates = close.index
+        in_window = np.ones(len(dates), dtype=bool)
+        if start_date:
+            in_window &= dates >= pd.Timestamp(start_date)
+        if end_date:
+            in_window &= dates <= pd.Timestamp(end_date)
+        window = dates[in_window]
+        ready = eligible.loc[window].sum(axis=1) >= self.top_n
+        if not ready.any():
+            logger.warning("No date in the window has enough scored names; history too short for warm-up.")
+            return {}
+        dates = window[window >= ready.idxmax()]
+        rebalance_dates = set(dates[::self.rebalance_freq])
+        logger.info(f"Backtest {dates[0].date()} -> {dates[-1].date()}: {len(rebalance_dates)} rebalances, "
+                    f"top {self.top_n}, {self.cost_rate * 1e4:.1f} bps per trade")
 
-        # Portfolio state
-        cash = self.initial_capital
-        holdings = {}
+        cash = float(self.initial_capital)
+        holdings: Dict[str, float] = {}
+        picks = {}
+        traded = 0.0
+        costs = 0.0
         portfolio_values = []
-        benchmark_values = []
 
-        logger.info(f"Running backtest with {len(rebalance_indices)} rebalance dates, top {self.top_n} stocks")
+        for current_date in dates:
+            prices = close.loc[current_date]
+            if current_date in rebalance_dates:
+                pool = signal.loc[current_date][eligible.loc[current_date]]
+                target = set(pool.nlargest(self.top_n).index)
+                picks[current_date] = (target, pool.index)
 
-        # Main loop
-        for idx, current_date in enumerate(dates):
-            is_rebalance = (idx in rebalance_indices)
-            logger.info(f"Loop: idx={idx}, date={current_date}, is_rebalance={is_rebalance}")
+                # Trade only the names that changed; continuing positions stay.
+                sells = [t for t in holdings if t not in target]
+                for ticker in sells:
+                    notional = holdings.pop(ticker) * prices[ticker]
+                    cash += notional * (1 - self.cost_rate)
+                    traded += notional
+                    costs += notional * self.cost_rate
+                buys = [t for t in target if t not in holdings]
+                if buys:
+                    per_stock = cash / len(buys)
+                    for ticker in buys:
+                        holdings[ticker] = per_stock * (1 - self.cost_rate) / prices[ticker]
+                        traded += per_stock
+                        costs += per_stock * self.cost_rate
+                    cash = 0.0
+                logger.debug(f"Rebalance {current_date.date()}: sold {len(sells)}, bought {len(buys)}")
 
-            # Get prices for this date
-            try:
-                day_prices = price_data.xs(current_date, level='Date')['Close']
-            except KeyError:
-                # No data for this date; carry forward previous value
-                if portfolio_values:
-                    portfolio_values.append(portfolio_values[-1])
-                    benchmark_values.append(benchmark_values[-1])
-                else:
-                    portfolio_values.append(cash)
-                    benchmark_values.append(cash * (bench_aligned.loc[current_date] / bench_aligned.iloc[0]))
-                continue
-
-            # Rebalance if today is a rebalance date
-            if is_rebalance:
-                logger.info(f"Rebalance on {current_date} (idx={idx})")
-                try:
-                    date_scores = scores_df.xs(current_date, level='Date')
-                except KeyError:
-                    logger.warning(f"No scores for {current_date}")
-                    pass
-                else:
-                    date_scores = date_scores.dropna(subset=['composite'])
-                    if date_scores.empty:
-                        logger.warning(f"Empty scores for {current_date}")
-                    else:
-                        top_tickers = date_scores.nlargest(self.top_n, 'composite').index.tolist()
-                        logger.info(f"Top {len(top_tickers)} tickers: {top_tickers[:5]}...")
-                        prices_for_selection = day_prices.reindex(top_tickers).dropna()
-                        logger.info(f"Found prices for {len(prices_for_selection)} out of {len(top_tickers)} selected tickers")
-                        if not prices_for_selection.empty:
-                            # Sell all current holdings
-                            if holdings:
-                                sell_value = 0.0
-                                for ticker, shares in holdings.items():
-                                    if ticker in day_prices:
-                                        sell_value += shares * day_prices[ticker]
-                                cash = sell_value
-                                holdings = {}
-                                logger.info(f"Sold holdings, cash = {cash:.2f}")
-                            # Buy new portfolio (equal-weighted)
-                            invest_per_stock = cash / len(prices_for_selection)
-                            logger.info(f"Investing {invest_per_stock:.2f} per stock across {len(prices_for_selection)} tickers")
-                            for ticker, price in prices_for_selection.items():
-                                holdings[ticker] = invest_per_stock / price
-                            cash = 0.0
-                            logger.info(f"Portfolio rebalanced on {current_date} with {len(holdings)} positions")
-                        else:
-                            logger.warning(f"No valid prices for selected tickers on {current_date}")
-
-            # Compute current portfolio value
-            total_value = cash
-            for ticker, shares in holdings.items():
-                if ticker in day_prices:
-                    total_value += shares * day_prices[ticker]
+            total_value = cash + sum(shares * prices[t] for t, shares in holdings.items())
             portfolio_values.append(total_value)
-
-            # Benchmark value
-            bench_value = self.initial_capital * (bench_aligned.loc[current_date] / bench_aligned.iloc[0])
-            benchmark_values.append(bench_value)
-
-        logger.info(f"Backtest loop completed. Portfolio length: {len(portfolio_values)}")
+            logger.debug(f"{current_date.date()}: value={total_value:,.2f}")
 
         if len(portfolio_values) < 2:
             logger.warning("Backtest generated too few values.")
             return {}
 
         port_series = pd.Series(portfolio_values, index=dates)
-        bench_series = pd.Series(benchmark_values, index=dates)
+        bench = self._fetch_benchmark(dates[0].strftime('%Y-%m-%d'), dates[-1].strftime('%Y-%m-%d'))
+        bench = bench.reindex(dates).ffill().bfill()
+        if bench.isna().all():
+            logger.warning("Benchmark data entirely missing. Using flat 0% return.")
+            bench = pd.Series(1.0, index=dates)
+        bench_series = self.initial_capital * bench / bench.iloc[0]
 
         port_returns = port_series.pct_change().dropna()
         bench_returns = bench_series.pct_change().dropna()
@@ -222,7 +179,8 @@ class BacktestEngine:
         excess_daily = port_returns - bench_returns.reindex(port_returns.index).ffill()
         hit_rate = (excess_daily > 0).mean()
 
-        logger.info("Returning backtest results.")
+        p_value, n_periods = self._selection_p_value(picks, close, dates[-1])
+
         return {
             'strategy_return': total_return,
             'benchmark_return': benchmark_total_return,
@@ -231,8 +189,45 @@ class BacktestEngine:
             'max_drawdown': max_drawdown,
             'volatility': volatility,
             'hit_rate': hit_rate,
+            'p_value': p_value,
+            'n_rebalances': n_periods,
+            'turnover': traded / self.initial_capital,
+            'total_costs': costs,
+            'start_date': dates[0],
+            'end_date': dates[-1],
             'final_value': port_series.iloc[-1],
             'initial_capital': self.initial_capital,
             'portfolio_series': port_series,
             'benchmark_series': bench_series,
         }
+
+    def _selection_p_value(self, picks: Dict, close: pd.DataFrame, last_date) -> tuple:
+        """
+        Random-portfolio test of the stock selection.
+
+        For each holding period, draw ``n_bootstrap`` random portfolios of the
+        same size from the same eligible pool the strategy chose from, and
+        compare the compounded equal-weight return of the strategy's picks with
+        that of the random picks. The p-value is the share of random portfolios
+        that did at least as well (one-sided, gross of costs, with the +1
+        correction so it is never exactly 0). Few periods means little
+        evidence: read a p-value from ~25 rebalances with care.
+        """
+        starts = sorted(picks)
+        if not starts or self.n_bootstrap <= 0:
+            return np.nan, len(starts)
+        rng = np.random.default_rng(self.seed)
+        ends = starts[1:] + [last_date]
+        strat_log = 0.0
+        rand_log = np.zeros(self.n_bootstrap)
+        for start, end in zip(starts, ends):
+            target, pool = picks[start]
+            if start == end or not len(pool):
+                continue
+            period = (close.loc[end, pool] / close.loc[start, pool] - 1).fillna(0.0)
+            k = len(target)
+            strat_log += np.log1p(period[list(target)].mean())
+            draws = rng.random((self.n_bootstrap, len(pool))).argsort(axis=1)[:, :k]
+            rand_log += np.log1p(period.to_numpy()[draws].mean(axis=1))
+        p_value = (1 + np.sum(rand_log >= strat_log)) / (self.n_bootstrap + 1)
+        return float(p_value), len(starts)

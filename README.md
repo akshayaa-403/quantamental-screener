@@ -9,7 +9,7 @@ Multi‑factor stock screener with sentiment analysis, technical indicators, and
 ## Features
 
 - S&P 500 universe selection with market cap/volume filters
-- Technical indicators (RSI, MACD, Bollinger Bands, etc.)
+- Momentum (12-minus-1), signed relative volume and low-volatility factors
 - Ensemble sentiment analysis (VADER + TextBlob by default; optional FinBERT)
 - Pluggable factor scoring system
 - Historical backtesting with rebalancing
@@ -46,6 +46,30 @@ list). Factor weights, universe size, backtest parameters, Redis, and API keys a
 configured via `FACTOR_*`, `UNIVERSE_*`, `BACKTEST_*`, `REDIS_*`, and the API-key
 variables. Sentiment analysis uses real news by default; set
 `USE_MOCK_SENTIMENT=true` for a deterministic offline demo.
+
+## How the backtest works (and what it can't tell you)
+
+- **No lookahead.** Scores on day *t* use data up to the close of *t*, and the
+  portfolio trades on them at the close of *t+1*. Tests in
+  `tests/test_pipeline.py` change future prices and check that past scores and
+  past equity don't move.
+- **No sentiment.** News sentiment is a snapshot of today's headlines, so it
+  only feeds the live ranking. Applying it to past dates would be lookahead.
+- **Warm-up.** Factors are `NaN` until they have enough history (momentum is
+  12-minus-1: about 13 months), and trading starts once enough names are scored.
+- **Costs and turnover.** Only names that leave or enter the top N are traded,
+  and each trade pays `BACKTEST_TRANSACTION_COST_BPS`.
+- **Significance.** `p_value` is the share of random portfolios, drawn from the
+  same eligible names at each rebalance, that matched the strategy's picks
+  (gross of costs). A year of weekly rebalancing is ~50 decisions. Treat a
+  large p-value as "indistinguishable from luck".
+- **Survivorship bias remains.** The universe is *today's* S&P 500, ranked by
+  *today's* market cap, so companies that fell out of the index can never be
+  picked. A clean fix needs point-in-time constituent lists. The backtest's own
+  liquidity screen (trailing 20-day volume, known the day before) is point-in-time.
+- **Overfitting.** If you tune factor weights, tune them on one period and
+  check them on another: `BacktestEngine.run(..., start_date=..., end_date=...)`
+  restricts the trading window while still using earlier data for warm-up.
 
 ## Development
 

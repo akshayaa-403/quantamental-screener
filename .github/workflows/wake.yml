@@ -19,7 +19,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install selenium webdriver-manager
+          pip install selenium
 
       - name: Setup Chrome
         uses: browser-actions/setup-chrome@v1

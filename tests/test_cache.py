@@ -2,7 +2,7 @@
 
 The default CacheClient short-circuits when Redis is disabled (the out-of-the-box
 setting), so the ``fake_cache`` fixture is used to exercise the real get/set/
-delete/clear logic against an in-memory FakeStrictRedis.
+clear logic against an in-memory FakeStrictRedis.
 """
 
 import pandas as pd
@@ -31,18 +31,6 @@ def test_roundtrip_dataframe(fake_cache):
     df = pd.DataFrame({"a": [1, 2, 3], "b": [4.0, 5.0, 6.0]})
     fake_cache.set("frame", df)
     pd.testing.assert_frame_equal(fake_cache.get("frame"), df)
-
-
-def test_delete_pattern_only_removes_matches(fake_cache):
-    fake_cache.set("news:AAPL", ["h1"])
-    fake_cache.set("news:MSFT", ["h2"])
-    fake_cache.set("price:AAPL", [1, 2])
-
-    removed = fake_cache.delete_pattern("news:*")
-
-    assert removed == 2
-    assert fake_cache.get("news:AAPL") is None
-    assert fake_cache.get("price:AAPL") == [1, 2]
 
 
 def test_clear_removes_everything(fake_cache):

@@ -1,53 +1,62 @@
 from typing import List, Dict, Optional
+import numpy as np
 import pandas as pd
 from core.factor import Factor
 
 class ScoringEngine:
     def __init__(self, factors: List[Factor], weights: Dict[str, float] = None):
         self.factors = factors
-        if weights:
-            for factor in self.factors:
-                if factor.name in weights:
-                    factor.weight = weights[factor.name]
+        # The engine owns a private copy of the weights. Factor objects are
+        # shared (the CLI and the dashboard reuse them between the backtest and
+        # the live ranking), so writing to ``factor.weight`` would leak one
+        # run's weights into the next.
+        weights = weights or {}
+        self.weights = {f.name: float(weights.get(f.name, f.weight)) for f in factors}
 
     def compute(self, data: pd.DataFrame, sentiment_scores: Optional[Dict] = None,
-                cross_sectional_normalize: bool = False) -> pd.DataFrame:
-        
+                weights: Optional[Dict[str, float]] = None) -> pd.DataFrame:
+        """
+        Score every (Ticker, Date) row.
+
+        ``weights`` overrides this engine's weights for this call only. A row
+        whose required factors (those with a non-zero weight) are still in
+        their warm-up window gets a NaN composite and no rank, so it is never
+        mistaken for an average stock.
+        """
+        active = {**self.weights, **(weights or {})}
+
         factor_scores = {}
+        warming_up = pd.Series(False, index=data.index)
         for factor in self.factors:
             kwargs = {}
             if factor.name == 'sentiment':
                 kwargs['sentiment_scores'] = sentiment_scores or {}
             raw = factor.compute(data, **kwargs)
-            
+
             if not isinstance(raw.index, pd.MultiIndex) or raw.index.nlevels != 2:
                 raise ValueError(f"Factor {factor.name} returned a Series with invalid index. "
                                  f"Expected MultiIndex of 2 levels, got {raw.index}")
+            if list(raw.index.names) != ['Ticker', 'Date']:
+                raw = raw.rename_axis(['Ticker', 'Date'])
 
-            if cross_sectional_normalize:
-                # Normalize per date (cross‑sectional)
-                
-                if raw.index.names[0] != 'Ticker' or raw.index.names[1] != 'Date':
-                    raw.index.set_names(['Ticker', 'Date'], inplace=True)
-                # Group by the second level (date) and standardize cross-sectionally
-                normalized = raw.groupby(level=1).transform(self._standardize_series)
-            else:
-                normalized = factor.normalize(raw)
+            if factor.required and active.get(factor.name, 0.0) != 0.0:
+                warming_up |= raw.reindex(data.index).isna()
 
-            factor_scores[factor.name] = normalized
+            # Standardize within each date, never across dates: scaling by the
+            # whole panel would let future values move past scores.
+            factor_scores[factor.name] = raw.groupby(level='Date').transform(self._standardize_series)
 
         combined = pd.DataFrame(factor_scores)
-        numeric_cols = [col for col in combined.columns if col in [f.name for f in self.factors]]
-        if numeric_cols:
+        if factor_scores:
             combined['composite'] = sum(
-                combined[col] * next(f.weight for f in self.factors if f.name == col)
-                for col in numeric_cols
+                combined[name] * active.get(name, 0.0) for name in factor_scores
             )
         else:
             combined['composite'] = 0.0
+        combined.loc[warming_up.reindex(combined.index).to_numpy(), 'composite'] = np.nan
 
         # Rank per date
-        combined['rank'] = combined.groupby(level=1)['composite'].rank(ascending=False)
+        combined['rank'] = combined.groupby(level='Date')['composite'].rank(ascending=False)
         return combined
 
     @staticmethod
@@ -58,8 +67,9 @@ class ScoringEngine:
         min-max scaling it is not distorted by a single outlier stock, and it
         puts every factor on a common mean-0 / unit-variance scale so the
         configured weights are directly comparable. Scores are clipped to +/-3
-        to cap the influence of extreme outliers. A degenerate (constant or
-        empty) cross-section maps to 0.
+        to cap the influence of extreme outliers. Missing values map to 0 (the
+        cross-sectional average), as does a degenerate (constant or empty)
+        cross-section.
         """
         clean = s.dropna()
         if clean.empty:

@@ -1,11 +1,11 @@
 import pandas as pd
 import requests
-from typing import List
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, List, Optional
 from config.settings import get_settings
 import logging
 import yfinance as yf
 import io
-from utils.logging_utils import retry_on_network_error
 
 # Suppress noisy HTTP debug logs
 logging.getLogger("requests").setLevel(logging.WARNING)
@@ -22,52 +22,59 @@ class UniverseSelector:
         self.min_volume = config.get('min_volume', settings.universe.min_volume)
 
     def select(self) -> List[str]:
-        tickers = self._fetch_sp500_yfinance()
-        if not tickers:
-            tickers = self._fetch_sp500_csv_fallback()
-        if not tickers:
-            tickers = self._fetch_fallback_tickers()
+        tickers = self._fetch_sp500_csv() or self._fetch_fallback_tickers()
+        # Yahoo spells share classes with a dash: BRK.B -> BRK-B.
+        tickers = [t.replace('.', '-') for t in tickers]
 
-        selected = tickers[:self.universe_size]
+        selected = self._apply_filters(tickers)[:self.universe_size]
         logger.info(f"Universe filtered to {len(selected)} stocks")
         return selected
 
-    @retry_on_network_error
-    def _fetch_sp500_yfinance(self) -> List[str]:
-        """Primary: fetch constituents from ^GSPC.components, fallback to SPY holdings."""
-        try:
-            sp500 = yf.Ticker("^GSPC")
-            if hasattr(sp500, 'components') and sp500.components:
-                comps = sp500.components
-                if isinstance(comps, dict):
-                    tickers = list(comps.keys())
-                else:
-                    tickers = comps
-                tickers = [t for t in tickers if t and not t.startswith('^')]
-                logger.info(f"Fetched {len(tickers)} S&P 500 tickers from ^GSPC.components")
-                return tickers
-        except Exception as e:
-            logger.warning(f"yfinance ^GSPC components failed: {e}")
+    def _apply_filters(self, tickers: List[str]) -> List[str]:
+        """
+        Keep names above ``min_market_cap`` and ``min_volume`` (average daily
+        share volume), largest market cap first, so the universe is the biggest
+        liquid names rather than whatever the source list happens to put first.
 
-        try:
-            spy = yf.Ticker("SPY")
-            holdings = spy.holdings
-            if holdings is not None and not holdings.empty:
-                if 'Symbol' in holdings.columns:
-                    tickers = holdings['Symbol'].dropna().astype(str).str.strip().tolist()
-                else:
-                    tickers = holdings.index.tolist()
-                tickers = [t for t in tickers if t and not t.startswith('^')]
-                logger.info(f"Fetched {len(tickers)} tickers from SPY holdings")
-                return tickers
-        except Exception as e:
-            logger.warning(f"yfinance SPY holdings failed: {e}")
+        These are *today's* market caps and *today's* index members, so a
+        backtest over this universe has survivorship bias: companies that fell
+        out of the index can never be picked. The backtest applies its own
+        point-in-time liquidity screen, but a clean fix needs historical
+        constituent lists, which no free source here provides.
+        """
+        if not self.min_market_cap and not self.min_volume:
+            return tickers
+        fundamentals = self._fetch_fundamentals(tickers)
+        if not fundamentals:
+            logger.warning("No market cap/volume data available; universe left unfiltered.")
+            return tickers
+        passing = [
+            t for t, (cap, vol) in fundamentals.items()
+            if cap is not None and vol is not None
+            and cap >= self.min_market_cap and vol >= self.min_volume
+        ]
+        logger.info(f"{len(passing)}/{len(tickers)} tickers pass market cap >= {self.min_market_cap:,.0f} "
+                    f"and volume >= {self.min_volume:,.0f}")
+        return sorted(passing, key=lambda t: fundamentals[t][0], reverse=True)
 
-        return []
+    def _fetch_fundamentals(self, tickers: List[str]) -> Dict[str, tuple]:
+        """Return ticker -> (market cap, 3-month average volume); unknowns are None."""
+        def one(ticker: str):
+            try:
+                info = yf.Ticker(ticker).fast_info
+                return ticker, (_number(info.get('marketCap')), _number(info.get('threeMonthAverageVolume')))
+            except Exception as e:
+                logger.debug(f"No fundamentals for {ticker}: {e}")
+                return ticker, (None, None)
 
-    @retry_on_network_error
-    def _fetch_sp500_csv_fallback(self) -> List[str]:
-        """Secondary: use the well‑maintained CSV from GitHub."""
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            results = dict(pool.map(one, tickers))
+        if all(v == (None, None) for v in results.values()):
+            return {}
+        return results
+
+    def _fetch_sp500_csv(self) -> List[str]:
+        """S&P 500 constituents from the maintained CSV on GitHub."""
         url = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/main/data/constituents.csv"
         try:
             resp = requests.get(url, timeout=10)
@@ -75,10 +82,10 @@ class UniverseSelector:
             df = pd.read_csv(io.StringIO(resp.text))
             if 'Symbol' in df.columns:
                 tickers = df['Symbol'].dropna().astype(str).str.strip().tolist()
-                logger.info(f"Fetched {len(tickers)} S&P 500 tickers from CSV fallback")
+                logger.info(f"Fetched {len(tickers)} S&P 500 tickers from CSV")
                 return tickers
         except Exception as e:
-            logger.warning(f"CSV fallback failed: {e}")
+            logger.warning(f"S&P 500 CSV fetch failed: {e}")
         return []
 
     def _fetch_fallback_tickers(self) -> List[str]:
@@ -97,3 +104,10 @@ class UniverseSelector:
         ]
         logger.info(f"Using fallback with {len(base_tickers)} tickers")
         return base_tickers
+
+def _number(value) -> Optional[float]:
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if pd.isna(value) else value

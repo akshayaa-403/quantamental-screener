@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 from core.factor import Factor
 import logging
@@ -6,41 +7,37 @@ logger = logging.getLogger(__name__)
 
 class SentimentFactor(Factor):
     name = "sentiment"
+    # Missing sentiment is treated as neutral, not as a reason to drop a row.
+    required = False
     
     def compute(self, data: pd.DataFrame, **kwargs) -> pd.Series:
         """
-        Compute sentiment scores for each ticker on each date.
-        Expects sentiment_scores as a dict of ticker -> (score or dict).
-        If dict with 'score' key, uses that. If scalar, uses directly.
-        The score is broadcast to all dates for that ticker (constant over time).
-        For a real backtest, you would need historical sentiment per date.
+        Broadcast each ticker's sentiment score to all of its dates.
+
+        Expects ``sentiment_scores`` as a dict of ticker -> (score or dict with
+        a 'score' key). Tickers with no score are NaN, not 0: after
+        cross-sectional z-scoring a raw 0 is not neutral (it sits below average
+        whenever the covered names are net positive), whereas NaN is filled
+        with a z-score of exactly 0.
+
+        The scores are a snapshot of *current* news, so this factor must only
+        be used for the live ranking, never in a backtest.
         """
-        sentiment_scores = kwargs.get('sentiment_scores', {})
-        
-        if not isinstance(data.index, pd.MultiIndex) or data.index.names != ['Ticker', 'Date']:
-            raise ValueError("Data index must be MultiIndex with levels ['Ticker', 'Date']")
-        
-        # Create a Series of zeros with the same index
-        result = pd.Series(0.0, index=data.index)
-        
-        if not sentiment_scores:
-            logger.warning("No sentiment scores provided. Returning zeros.")
-            return result
-        
-        # For each ticker, extract score and broadcast to all its dates
-        tickers = data.index.get_level_values('Ticker').unique()
-        for ticker in tickers:
-            score_data = sentiment_scores.get(ticker, {})
-            if isinstance(score_data, dict):
-                score = score_data.get('score', 0.0)
-            elif isinstance(score_data, (int, float)):
-                score = score_data
-            else:
-                score = 0.0
-            # Assign to all rows for this ticker
-            mask = data.index.get_level_values('Ticker') == ticker
-            result.loc[mask] = score
-        
-        non_zero = (result != 0.0).sum()
-        logger.info(f"Sentiment scores assigned: {non_zero}/{len(result)} non-zero values")
+        sentiment_scores = kwargs.get('sentiment_scores') or {}
+        self._validate(data)
+
+        def _score(value):
+            if isinstance(value, dict):
+                value = value.get('score')
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return float(value)
+            return np.nan
+
+        per_ticker = {t: _score(v) for t, v in sentiment_scores.items()}
+        tickers = data.index.get_level_values('Ticker')
+        result = pd.Series(tickers.map(lambda t: per_ticker.get(t, np.nan)), index=data.index, dtype=float)
+
+        if per_ticker:
+            covered = result.groupby(level='Ticker').first().notna().sum()
+            logger.info(f"Sentiment coverage: {covered}/{tickers.nunique()} tickers")
         return result
