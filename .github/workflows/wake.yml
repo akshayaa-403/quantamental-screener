@@ -2,7 +2,7 @@ name: Wake Streamlit App
 
 on:
   schedule:
-    - cron: "0 */10 * * *"  
+    - cron: "17 */6 * * *"  # off the hour: GitHub delays top-of-hour runs; Streamlit sleeps after 12h idle
   workflow_dispatch:
 
 jobs:

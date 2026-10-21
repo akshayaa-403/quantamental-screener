@@ -1,51 +1,65 @@
+"""Keep the Streamlit Community Cloud app awake: check if it is up, wake it if asleep, and fail unless it renders."""
+import sys
+import time
+
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException
-import os
 
 STREAMLIT_URL = "https://quantamental-screener.streamlit.app"
+WAKE_BUTTON = (By.XPATH, "//button[contains(., 'get this app back up')]")
+APP_FRAME = (By.CSS_SELECTOR, "iframe[src*='/~/+/']")  # the hosted app, present only once it is running
+TIMEOUT = 300
+
+
+def state(driver):
+    """'asleep', 'up' or None (still loading). The app is up only when its own frame has rendered stApp."""
+    if driver.find_elements(*WAKE_BUTTON):
+        return "asleep"
+    frames = driver.find_elements(*APP_FRAME)
+    if not frames:
+        return None
+    driver.switch_to.frame(frames[0])
+    try:
+        return "up" if driver.find_elements(By.CSS_SELECTOR, "[data-testid='stApp']") else None
+    finally:
+        driver.switch_to.default_content()
+
+
+def wait_for(driver, wanted, timeout):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        s = state(driver)
+        if s in wanted:
+            return s
+        time.sleep(5)
+    return None
+
 
 def main():
     options = Options()
-    options.add_argument('--headless=new')
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--disable-gpu')
-    options.add_argument('--window-size=1920,1080')
-
+    for arg in ("--headless=new", "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--window-size=1920,1080"):
+        options.add_argument(arg)
     driver = webdriver.Chrome(options=options)
     try:
         driver.get(STREAMLIT_URL)
-        print(f"Opened {STREAMLIT_URL}")
-
-        wait = WebDriverWait(driver, 15)
-        try:
-            button = wait.until(
-                EC.element_to_be_clickable((By.XPATH, "//button[contains(text(),'Yes, get this app back up')]"))
-            )
-            print("Wake-up button found. Clicking...")
-            button.click()
-
-            try:
-                wait.until(EC.invisibility_of_element_located((By.XPATH, "//button[contains(text(),'Yes, get this app back up')]")))
-                print("Button clicked and disappeared ✅ (app should be waking up)")
-            except TimeoutException:
-                print("Button was clicked but did NOT disappear ❌ (possible failure)")
-                exit(1)
-
-        except TimeoutException:
-            print("No wake-up button found. Assuming app is already awake ✅")
-
-    except Exception as e:
-        print(f"Unexpected error: {e}")
-        exit(1)
+        s = wait_for(driver, ("up", "asleep"), 60)
+        print(f"Initial state: {s or 'unknown (page did not load)'}")
+        if s == "up":
+            return 0
+        if s == "asleep":
+            driver.find_element(*WAKE_BUTTON).click()
+            print("Clicked wake button, waiting for the app to boot...")
+        else:
+            driver.refresh()
+        if wait_for(driver, ("up",), TIMEOUT) == "up":
+            print("App is up.")
+            return 0
+        print(f"App did not come up within {TIMEOUT}s.")
+        return 1
     finally:
         driver.quit()
-    print("Script finished.")
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
