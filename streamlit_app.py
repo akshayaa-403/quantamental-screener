@@ -1,459 +1,208 @@
 from dotenv import load_dotenv
 load_dotenv()
-import streamlit as st
-import pandas as pd
-import numpy as np
-import plotly.express as px
-from datetime import datetime, timedelta
-from config.settings import get_settings, WARMUP_DAYS
-from data_sources.yahoo_finance import YahooFinanceSource
-from sentiment.ensemble_sentiment import EnsembleSentiment
-from factors import MomentumFactor, SentimentFactor, VolumeFactor, VolatilityFactor
-from pipeline import UniverseSelector, DataCollector, ScoringEngine, BacktestEngine
 import logging
+import time
+import traceback
+
+import requests
+import streamlit as st
+
+st.set_page_config(
+    page_title="Quantamental Screener",
+    page_icon=":material/query_stats:",
+    layout="wide",
+    initial_sidebar_state="auto",  # collapsed on phones, where it also holds the nav
+)
+
+from ui import pages, stages, state  # noqa: E402 - after set_page_config
+from ui.state import FACTOR_COLS, PERIOD_OPTIONS  # noqa: E402
+from ui.theme import fmt_date, weights_bar_html  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-FACTOR_COLS = ["momentum", "sentiment", "volume", "volatility"]
-# Palette that reads well in both light and dark themes.
-STRATEGY_COLOR = "#22c55e"
-BENCHMARK_COLOR = "#94a3b8"
-ACCENT = "#6366f1"
-
-# Page configuration
-st.set_page_config(
-    page_title="Quantamental Screener",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-# Theme-aware styling: a gradient hero and softened containers that work in
-# both light and dark mode (no hard-coded light-only backgrounds).
-st.markdown(
-    """
+# The theme lives in .streamlit/config.toml; this only tightens the top padding,
+# adds tabular figures, and shrinks the Backtest page's secondary stats.
+CSS = """
 <style>
-    .hero {
-        background: linear-gradient(120deg, #6366f1 0%, #22c55e 100%);
-        padding: 1.4rem 1.8rem;
-        border-radius: 0.9rem;
-        margin-bottom: 1.2rem;
-        color: #ffffff;
-        box-shadow: 0 6px 24px rgba(99, 102, 241, 0.25);
-    }
-    .hero h1 { margin: 0; font-size: 2.1rem; font-weight: 800; color: #ffffff; }
-    .hero p  { margin: 0.35rem 0 0 0; font-size: 1.02rem; opacity: 0.92; }
-    /* Metric cards adapt to theme via Streamlit's own variables. */
-    div[data-testid="stMetric"] {
-        background: rgba(127, 127, 127, 0.08);
-        border: 1px solid rgba(127, 127, 127, 0.18);
-        padding: 0.75rem 1rem;
-        border-radius: 0.7rem;
-    }
-    div[data-testid="stMetricLabel"] { opacity: 0.75; }
+[data-testid="stMainBlockContainer"] { padding-top: 4.5rem; }
+[data-testid="stMetricValue"], [data-testid="stMetricDelta"] { font-variant-numeric: tabular-nums; }
+.st-key-secondary_stats [data-testid="stMetricValue"] { font-size: 1.3rem; }
 </style>
-""",
-    unsafe_allow_html=True,
-)
+"""
 
-# Session state initialization
-for _key in ("screener_results", "price_data", "scores_df", "data_source"):
-    if _key not in st.session_state:
-        st.session_state[_key] = None
+RATE_LIMITED = "Yahoo Finance is rate-limiting requests from this server. Wait a minute, then run again."
+NETWORK = "Couldn't reach a data provider (network error). Check the connection, then run again."
 
 
-@st.cache_resource(ttl=3600)
-def load_components():
-    """Load heavy components once and cache them."""
-    data_source = YahooFinanceSource()
-    sentiment_model = EnsembleSentiment()
-    factors = [MomentumFactor(), SentimentFactor(), VolumeFactor(), VolatilityFactor()]
-    return data_source, sentiment_model, factors
+def friendly_message(exc: Exception) -> str:
+    last = getattr(exc, "last_attempt", None)  # tenacity.RetryError wraps the real error
+    if last is not None and last.exception() is not None:
+        exc = last.exception()
+    if isinstance(exc, stages.ScreenerError):
+        return str(exc)
+    text = f"{type(exc).__name__} {exc}".lower()
+    if "ratelimit" in text or "rate limit" in text or "too many requests" in text or "429" in text:
+        return RATE_LIMITED
+    if isinstance(exc, (requests.RequestException, ConnectionError, TimeoutError)):
+        return NETWORK
+    return f"The screener stopped with an unexpected error ({type(exc).__name__}). Details below."
 
 
-@st.cache_data(ttl=300)  # 5 minute cache
-def run_screener(universe_size, start_date, end_date, weights, use_mock_sentiment):
-    """Run the complete screener pipeline with caching."""
-    data_source, sentiment_model, factors = load_components()
+def run_pipeline(params: dict):
+    """Run every stage under a live status panel; store results or the error in session state."""
+    started = time.perf_counter()
+    start, end, weights = params["start_date"], params["end_date"], params["weights"]
+    with st.status("Running the screener…", expanded=True) as status:
+        try:
+            status.update(label="Selecting universe…")
+            st.write(":material/public: Selecting universe")
+            tickers = stages.select_universe(params["universe_size"])
 
-    # Universe selection
-    tickers = UniverseSelector({"size": universe_size}).select()
+            status.update(label=f"Downloading prices ({len(tickers)} tickers)…")
+            st.write(f":material/download: Downloading prices ({len(tickers)} tickers)")
+            prices = stages.download_prices(tuple(tickers), start, end)
 
-    # Data collection: WARMUP_DAYS of extra history before the chosen start so
-    # 12-minus-1 momentum can score from the first day of the backtest.
-    data_start = (pd.Timestamp(start_date) - pd.Timedelta(days=WARMUP_DAYS)).strftime("%Y-%m-%d")
-    price_data = DataCollector(data_source).collect(tickers, data_start, end_date)
+            if params["use_mock"]:
+                st.write(":material/newspaper: Fetching news: skipped (mock sentiment)")
+                news_tickers = ()
+                in_data = tuple(prices.index.get_level_values("Ticker").unique())
+                sentiment = stages.mock_sentiment(in_data)
+            else:
+                news_tickers = tuple(tickers[: stages.LIVE_SENTIMENT_LIMIT])
+                status.update(label=f"Fetching news ({len(news_tickers)} tickers)…")
+                st.write(f":material/newspaper: Fetching news ({len(news_tickers)} tickers)")
+                try:
+                    sentiment = stages.live_sentiment(news_tickers)
+                except stages.NoHeadlines:
+                    sentiment = {}  # every name is scored neutral; a notice says so
+                    st.write(":material/warning: No headlines came back")
 
-    if use_mock_sentiment:
-        # Seeded mock sentiment: fast, offline, reproducible.
-        rng = np.random.default_rng(42)
-        tickers_in_data = price_data.index.get_level_values("Ticker").unique()
-        sentiment_scores = {t: {"score": float(rng.uniform(-0.8, 0.8))} for t in tickers_in_data}
-    else:
-        # Real sentiment for the first 20 tickers; missing names are scored neutral.
-        limited_tickers = tickers[: min(20, len(tickers))]
-        news_by_ticker = {}
-        for ticker in limited_tickers:
-            headlines = data_source.get_news_headlines(ticker, lookback_days=7)
-            if headlines:
-                news_by_ticker[ticker] = headlines
-        sentiment_scores = sentiment_model.batch_analyze(news_by_ticker) if news_by_ticker else {}
+            status.update(label="Scoring…")
+            st.write(":material/functions: Scoring")
+            scores = stages.score(prices, sentiment, weights)
 
-    # Scoring. The engine keeps its own copy of the weights, so the cached
-    # factor instances are never mutated between runs.
-    scorer = ScoringEngine(factors, weights=weights)
-    scores_df = scorer.compute(price_data, sentiment_scores)
+            status.update(label="Backtesting…")
+            st.write(":material/monitoring: Backtesting")
+            backtest = stages.backtest(prices, weights, start)
+        except Exception as exc:  # noqa: BLE001 - surface any pipeline error to the user
+            logger.exception("Screener failed")
+            status.update(label="Screener failed", state="error", expanded=False)
+            st.session_state.last_error = (friendly_message(exc), traceback.format_exc())
+            return
+        status.update(label=f"Screener finished in {time.perf_counter() - started:.0f}s",
+                      state="complete", expanded=False)
 
-    # Backtest without sentiment: today's news on past dates is lookahead.
-    backtest_results = BacktestEngine().run(scorer, price_data, sentiment_scores=None, start_date=start_date)
-
-    return scores_df, price_data, backtest_results, sentiment_scores
+    st.session_state.results = {
+        "scores": scores,
+        "prices": prices,
+        "backtest": backtest,
+        "sentiment": sentiment,
+        "news_tickers": news_tickers,
+        "universe": tuple(tickers),
+        "as_of": prices.index.get_level_values("Date").max(),
+        "params": params,
+    }
+    st.session_state.last_run_params = params
+    st.session_state.last_error = None
+    st.session_state.run_id += 1
+    n = prices.index.get_level_values("Ticker").nunique()
+    st.toast(f"Screener finished: prices for {n} stocks", icon=":material/check_circle:")
 
 
 def render_sidebar():
-    """Render the configuration sidebar and return the chosen settings."""
-    settings = get_settings()
-    default_w = settings.weights
+    """Settings. Widgets only change session state; the pipeline runs on Run screener."""
+    ss = st.session_state
     with st.sidebar:
-        st.header("⚙️ Configuration")
+        st.markdown("### :material/tune: Settings")
+        st.slider("Universe size", 10, 100, step=10, key="w_universe",
+                  help="The N largest S&P 500 names by market cap that pass the market-cap and volume floors.")
 
-        st.subheader("Universe")
-        universe_size = st.slider("Number of stocks to analyze", 10, 100, settings.universe.size, 10)
+        st.segmented_control("Backtest period", PERIOD_OPTIONS, key="w_period", on_change=state.keep_period,
+                             help="Trading window for the backtest. About 400 extra days are downloaded "
+                                  "before it so the factors can warm up.")
+        valid = True
+        if ss.w_period == "Custom":
+            today = state._today()
+            c1, c2 = st.columns(2)
+            c1.date_input("Start", key="w_start", max_value=today, format="YYYY-MM-DD")
+            c2.date_input("End", key="w_end", max_value=today, format="YYYY-MM-DD")
+            if ss.w_end <= ss.w_start:
+                st.error("End date must be after the start date.", icon=":material/event_busy:")
+                valid = False
+        start, end = state.period_dates()
+        st.caption(f"{start:%Y-%m-%d} → {end:%Y-%m-%d} (end date excluded)")
 
-        st.subheader("Analysis period")
-        today = datetime.now().date()
-        start_date = st.date_input("Start date", today - timedelta(days=365))
-        end_date = st.date_input("End date", today)
-
-        st.subheader("Factor weights")
+        st.markdown("**Factor weights**")
         c1, c2 = st.columns(2)
-        with c1:
-            momentum_w = st.slider("Momentum", 0.0, 1.0, default_w.momentum, 0.05)
-            sentiment_w = st.slider("Sentiment", 0.0, 1.0, default_w.sentiment, 0.05)
-        with c2:
-            volume_w = st.slider("Volume", 0.0, 1.0, default_w.volume, 0.05)
-            volatility_w = st.slider("Volatility", 0.0, 1.0, default_w.volatility, 0.05)
+        for col, factor in zip((c1, c1, c2, c2), FACTOR_COLS):  # stacks in factor order on phones
+            col.slider(factor.capitalize(), 0.0, 1.0, step=0.05, key=f"w_{factor}")
+        weights, fallback = state.normalized_weights()
+        st.markdown(weights_bar_html(weights), unsafe_allow_html=True)
+        if fallback:
+            st.warning("All weights are 0, so the default weights are used.", icon=":material/warning:")
+        st.button("Reset to defaults", on_click=state.reset_weights, type="tertiary", icon=":material/restart_alt:")
 
-        total = momentum_w + sentiment_w + volume_w + volatility_w
-        if total > 0:
-            weights = {
-                "momentum": momentum_w / total,
-                "sentiment": sentiment_w / total,
-                "volume": volume_w / total,
-                "volatility": volatility_w / total,
-            }
-        else:
-            weights = {c: getattr(default_w, c) for c in FACTOR_COLS}
-
-        # Live preview of the normalized weights the screen will actually use.
-        st.caption("Normalized weights (sum = 100%)")
-        weight_df = pd.DataFrame(
-            {"Weight": [weights[c] for c in FACTOR_COLS]},
-            index=[c.capitalize() for c in FACTOR_COLS],
-        )
-        st.dataframe(
-            weight_df,
-            width="stretch",
-            column_config={
-                "Weight": st.column_config.ProgressColumn(
-                    "Weight", format="percent", min_value=0.0, max_value=1.0
-                )
-            },
-        )
-
-        st.subheader("Sentiment source")
-        use_mock_sentiment = st.toggle(
-            "Use mock sentiment (fast offline demo)",
-            value=False,
-            help="On: seeded random scores, no news calls. Off: real news-based sentiment.",
-        )
+        st.toggle("Mock sentiment", key="w_mock",
+                  help="On: seeded random sentiment for every name. Fast, offline and reproducible, but not "
+                       f"real. Off: live news sentiment for the {stages.LIVE_SENTIMENT_LIMIT} largest names, "
+                       "which adds a few seconds per name on a cold cache. Prices are always real.")
 
         st.divider()
-        run_button = st.button("Run Screener", type="primary", width="stretch")
+        st.button("Run screener", type="primary", icon=":material/play_arrow:", width="stretch",
+                  on_click=state.request_run, disabled=not valid)
         st.caption("Results are cached for 5 minutes.")
+    return state.current_params(), valid
 
-    return universe_size, start_date, end_date, weights, use_mock_sentiment, run_button
 
-
-def render_top_stocks(scores_df):
-    st.subheader("Top stock recommendations")
-    top_n = st.selectbox("Number of stocks to display", [5, 10, 20, 50], index=1)
-
-    latest_date = scores_df.index.get_level_values("Date").max()
-    latest_scores = scores_df.xs(latest_date, level="Date")
-    top_stocks = latest_scores.nlargest(top_n, "composite")
-
-    # KPI strip
-    k1, k2, k3 = st.columns(3)
-    k1.metric("Stocks analyzed", f"{len(latest_scores):,}")
-    k2.metric("Avg composite (top)", f"{top_stocks['composite'].mean():.3f}")
-    k3.metric("Top pick", str(top_stocks.index[0]) if len(top_stocks) else "—")
-
-    disp = top_stocks[["rank"] + FACTOR_COLS].copy()
-    disp.insert(1, "composite", top_stocks["composite"])
-    disp.columns = ["Rank", "Composite", "Momentum", "Sentiment", "Volume", "Volatility"]
-    disp["Rank"] = disp["Rank"].astype(int)
-
-    cmin, cmax = float(disp["Composite"].min()), float(disp["Composite"].max())
-    if cmin == cmax:
-        cmax = cmin + 1e-9
-
-    st.dataframe(
-        disp,
-        width="stretch",
-        column_config={
-            "Rank": st.column_config.NumberColumn("Rank", format="%d", width="small"),
-            "Composite": st.column_config.ProgressColumn(
-                "Composite", format="%.3f", min_value=cmin, max_value=cmax
-            ),
-            "Momentum": st.column_config.NumberColumn("Momentum", format="%.3f"),
-            "Sentiment": st.column_config.NumberColumn("Sentiment", format="%.3f"),
-            "Volume": st.column_config.NumberColumn("Volume", format="%.3f"),
-            "Volatility": st.column_config.NumberColumn("Volatility", format="%.3f"),
-        },
-    )
-
-    st.download_button(
-        label="📥 Download as CSV",
-        data=disp.to_csv().encode("utf-8"),
-        file_name="top_stocks.csv",
-        mime="text/csv",
+def render_header():
+    results = st.session_state.results
+    st.markdown("### :material/query_stats: Quantamental Screener")
+    if results is None:
+        chips = ":gray-badge[Not run yet]"
+    else:
+        sentiment = (":orange-badge[:material/science: Mock sentiment]" if results["params"]["use_mock"]
+                     else ":blue-badge[:material/newspaper: Live sentiment]")
+        chips = (f"{sentiment} :gray-badge[:material/calendar_today: Prices as of {fmt_date(results['as_of'])}] "
+                 f":gray-badge[:material/stacks: Universe: {len(results['universe'])}]")
+    st.markdown(
+        "Ranks large-cap US stocks on momentum, volume, volatility and news sentiment, then backtests the "
+        f"price factors against SPY. &nbsp; {chips}"
     )
 
 
-def render_visualizations(scores_df):
-    st.subheader("Visualizations")
-    latest_scores = scores_df.xs(scores_df.index.get_level_values("Date").max(), level="Date")
-
-    c1, c2 = st.columns(2)
-    with c1:
-        fig1 = px.histogram(
-            latest_scores,
-            x="composite",
-            nbins=20,
-            title="Composite score distribution",
-            labels={"composite": "Composite score"},
-            color_discrete_sequence=[ACCENT],
-        )
-        fig1.update_layout(margin=dict(t=50, b=10), bargap=0.05)
-        st.plotly_chart(fig1, width="stretch")
-
-    with c2:
-        top10 = latest_scores.nlargest(10, "composite")
-        melted = top10.reset_index().melt(
-            id_vars=["Ticker"], value_vars=FACTOR_COLS, var_name="Factor", value_name="Score"
-        )
-        fig2 = px.bar(
-            melted,
-            x="Ticker",
-            y="Score",
-            color="Factor",
-            barmode="group",
-            title="Factor contributions (top 10)",
-        )
-        fig2.update_layout(margin=dict(t=50, b=10), legend_title_text="")
-        st.plotly_chart(fig2, width="stretch")
-
-    corr = latest_scores[FACTOR_COLS].corr()
-    fig3 = px.imshow(
-        corr,
-        text_auto=".2f",
-        title="Factor correlation",
-        color_continuous_scale="RdBu",
-        zmin=-1,
-        zmax=1,
-        aspect="auto",
-    )
-    fig3.update_layout(margin=dict(t=50, b=10))
-    st.plotly_chart(fig3, width="stretch")
-
-
-def render_backtest(backtest):
-    st.subheader("Backtest performance")
-    if not backtest:
-        st.warning("No backtest results available.")
-        return
-
-    sr = backtest.get("strategy_return", 0) * 100
-    br = backtest.get("benchmark_return", 0) * 100
-    er = backtest.get("excess_return", 0) * 100
-    sharpe = backtest.get("sharpe_ratio", 0)
-    mdd = backtest.get("max_drawdown", 0) * 100
-    vol = backtest.get("volatility", 0) * 100
-    hit = backtest.get("hit_rate", 0) * 100
-    final = backtest.get("final_value", 0)
-    init = backtest.get("initial_capital", 0)
-    p_value = backtest.get("p_value", float("nan"))
-
-    with st.container(border=True):
-        r1 = st.columns(4)
-        r1[0].metric("Strategy return", f"{sr:.2f}%", delta=f"{er:+.2f}% vs benchmark")
-        r1[1].metric("Benchmark return", f"{br:.2f}%")
-        r1[2].metric("Sharpe ratio", f"{sharpe:.2f}", help=">1 good, >2 very good, >3 excellent")
-        r1[3].metric("Hit rate", f"{hit:.1f}%", help="Share of days the strategy beat the benchmark")
-
-        r2 = st.columns(4)
-        r2[0].metric("Max drawdown", f"{mdd:.2f}%", help="Worst peak-to-trough loss")
-        r2[1].metric("Volatility (ann.)", f"{vol:.2f}%")
-        r2[2].metric("Final value", f"${final:,.0f}", delta=f"${final - init:,.0f}")
-        r2[3].metric(
-            "p-value (selection)",
-            "n/a" if pd.isna(p_value) else f"{p_value:.3f}",
-            help="Share of random portfolios, drawn from the same eligible names at each "
-            "rebalance, that did at least as well as the strategy's picks. Gross of costs.",
-        )
-    st.caption(
-        f"{backtest.get('n_rebalances', 0)} rebalances, trading on the previous day's signal, "
-        f"without sentiment (no point-in-time news history). Costs paid: "
-        f"${backtest.get('total_costs', 0):,.0f}. The universe is today's index members, "
-        "so results carry survivorship bias."
-    )
-
-    if "portfolio_series" in backtest and "benchmark_series" in backtest:
-        port_series = backtest["portfolio_series"]
-        bench_series = backtest["benchmark_series"]
-        # Normalize off the TRUE starting capital so the curve's endpoint matches
-        # the reported Strategy/Benchmark Return metrics exactly.
-        base = backtest.get("initial_capital", port_series.iloc[0])
-        df_plot = pd.DataFrame(
-            {"Strategy": port_series / base * 100, "Benchmark": bench_series / base * 100}
-        )
-        fig = px.line(
-            df_plot,
-            title="Cumulative performance (start = 100)",
-            labels={"value": "Index", "variable": "", "index": "Date"},
-            color_discrete_map={"Strategy": STRATEGY_COLOR, "Benchmark": BENCHMARK_COLOR},
-        )
-        fig.add_hline(y=100, line_dash="dot", line_color="gray", opacity=0.5)
-        fig.update_layout(
-            margin=dict(t=60, b=10),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
-        )
-        st.plotly_chart(fig, width="stretch")
-
-    st.caption("Weekly rebalancing into the top-ranked names. Benchmark: S&P 500 (SPY).")
-
-
-def render_deep_dive(scores_df, price_data, results):
-    st.subheader("Individual stock analysis")
-    latest_date = scores_df.index.get_level_values("Date").max()
-    latest_scores = scores_df.xs(latest_date, level="Date")
-    tickers = latest_scores.index.tolist()
-    if not tickers:
-        st.info("No stocks available.")
-        return
-
-    selected_ticker = st.selectbox("Select stock", tickers, index=0)
-    stock_score = latest_scores.loc[selected_ticker]
-    sentiment_data = results["sentiment"].get(selected_ticker, {}) if results else {}
-
-    st.markdown(f"### {selected_ticker}")
-    cols = st.columns(4)
-    # Deltas are relative to the universe average for context.
-    cols[0].metric(
-        "Composite",
-        f"{stock_score['composite']:.3f}",
-        delta=f"{stock_score['composite'] - latest_scores['composite'].mean():+.3f} vs avg",
-    )
-    cols[1].metric("Momentum", f"{stock_score['momentum']:.3f}")
-    cols[2].metric("Sentiment", f"{stock_score['sentiment']:.3f}")
-    conf = sentiment_data.get("confidence", 0) if isinstance(sentiment_data, dict) else 0
-    cols[3].metric("Sentiment confidence", f"{conf:.0%}")
-
-    if price_data is not None:
-        stock_prices = price_data.xs(selected_ticker, level="Ticker")
-        fig = px.line(
-            stock_prices,
-            x=stock_prices.index,
-            y="Close",
-            title=f"{selected_ticker} — price history",
-            labels={"Close": "Price ($)", "x": "Date"},
-            color_discrete_sequence=[ACCENT],
-        )
-        fig.update_layout(margin=dict(t=50, b=10))
-        st.plotly_chart(fig, width="stretch")
-
-    with st.expander("Recent news headlines"):
-        source = st.session_state.get("data_source")
-        if source is not None:
-            headlines = source.get_news_headlines(selected_ticker, lookback_days=7)
-            if headlines:
-                for headline in headlines:
-                    st.write(f"• {headline}")
-            else:
-                st.write("No recent news found.")
-        else:
-            st.write("Data source not available.")
-
-
-def render_empty_state():
-    st.info("⟵ Configure your screen in the sidebar, then click **Run Screener** to begin.")
-    with st.container(border=True):
-        st.markdown("#### How it works")
-        st.markdown(
-            "- **Momentum, Sentiment, Volume and (low) Volatility** factors are "
-            "z-score standardized across stocks each day and blended with your "
-            "weights into a **composite** score.\n"
-            "- Stocks are ranked daily; the backtest rebalances weekly into the "
-            "top names and compares against the S&P 500."
-        )
+def render_notices(params: dict, valid: bool):
+    ss = st.session_state
+    if ss.last_error:
+        message, details = ss.last_error
+        st.error(message, icon=":material/error:")
+        with st.expander("Error details"):
+            st.code(details, language="text")
+    if ss.results is not None and not ss.results["params"]["use_mock"] and not ss.results["sentiment"]:
+        st.warning("No live headlines could be fetched, so every stock's sentiment is blank (a z-score of 0 in "
+                   "the composite). The news source may be down; try again later or use mock sentiment.",
+                   icon=":material/newspaper:")
+    if ss.results is not None and not state.same_settings(params, ss.last_run_params):
+        msg, action = st.columns([4, 1], vertical_alignment="center")
+        msg.warning("Settings changed — results are from the previous run.", icon=":material/history:")
+        action.button("Rerun", type="primary", icon=":material/refresh:", width="stretch",
+                      on_click=state.request_run, disabled=not valid, key="stale_rerun")
 
 
 def main():
-    st.markdown(
-        """
-<div class="hero">
-    <h1>Quantamental Equity Screener</h1>
-    <p>Multi-factor analysis combining technical indicators, sentiment, and risk.</p>
-</div>
-""",
-        unsafe_allow_html=True,
-    )
-
-    universe_size, start_date, end_date, weights, use_mock_sentiment, run_button = render_sidebar()
-
-    if run_button:
-        with st.spinner("Running analysis pipeline… this may take 1–2 minutes."):
-            try:
-                scores_df, price_data, backtest_results, sentiment_scores = run_screener(
-                    universe_size, str(start_date), str(end_date), weights, use_mock_sentiment
-                )
-                st.session_state.scores_df = scores_df
-                st.session_state.price_data = price_data
-                st.session_state.data_source, _, _ = load_components()
-                st.session_state.screener_results = {
-                    "backtest": backtest_results,
-                    "sentiment": sentiment_scores,
-                }
-                st.success("✅ Screener completed successfully!")
-            except Exception as e:  # noqa: BLE001 - surface any pipeline error to the user
-                st.error(f"Error running screener: {e}")
-                logger.exception("Screener failed")
-                return
-
-    if st.session_state.scores_df is None:
-        render_empty_state()
-        return
-
-    scores_df = st.session_state.scores_df
-    price_data = st.session_state.price_data
-    results = st.session_state.screener_results
-
-    tab1, tab2, tab3, tab4 = st.tabs(
-        ["📊 Top Stocks", "📈 Visualizations", "🎯 Backtest", "🔍 Stock Deep Dive"]
-    )
-    with tab1:
-        render_top_stocks(scores_df)
-    with tab2:
-        render_visualizations(scores_df)
-    with tab3:
-        render_backtest(results["backtest"] if results else None)
-    with tab4:
-        render_deep_dive(scores_df, price_data, results)
+    state.init_state()
+    st.html(CSS)
+    params, valid = render_sidebar()
+    header = st.container()
+    if st.session_state.run_requested:
+        st.session_state.run_requested = False
+        if valid:
+            run_pipeline(params)
+    with header:
+        render_header()
+    render_notices(params, valid)
+    st.navigation(pages.PAGES, position="top").run()
 
 
 if __name__ == "__main__":
-    ds, _, _ = load_components()
-    st.session_state.data_source = ds
     main()

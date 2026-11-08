@@ -1,0 +1,27 @@
+# Dashboard theme. Brand colors are set for both the light and the dark theme
+# so viewers keep Streamlit's light/dark switch (and their system preference).
+
+[theme]
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+headingFont = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+codeFont = "JetBrains Mono:https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
+baseRadius = "0.6rem"
+showSidebarBorder = true
+# Indigo strategy, slate benchmark, then neutral extras.
+chartCategoricalColors = ["#6366f1", "#94a3b8", "#0ea5e9", "#f59e0b", "#ec4899", "#14b8a6"]
+# Colorblind-safe orange <-> blue, the same scale the tables use for z-scores.
+chartDivergingColors = ["#ea580c", "#f07a3a", "#f59e6b", "#f9c39f", "#fde6d2", "#dbe7fb", "#a9c2f6", "#7ba1f1", "#4f81ec", "#2563eb"]
+
+[theme.light]
+primaryColor = "#6366f1"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f4f5fa"
+textColor = "#1e2235"
+borderColor = "#e3e5ee"
+
+[theme.dark]
+primaryColor = "#6366f1"
+backgroundColor = "#0f1117"
+secondaryBackgroundColor = "#1a1d29"
+textColor = "#e6e8f0"
+borderColor = "#2a2e3d"

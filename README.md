@@ -28,20 +28,22 @@ Ranks large-cap US stocks on a weighted mix of price momentum, volume, volatilit
 | **Momentum** | 12-minus-1: return from 12 months ago to 1 month ago | Skips the latest month because one-month returns tend to reverse |
 | **Volume** | Volume ÷ 20-day average volume, signed by the day's return | Heavy buying ranks high and heavy selling ranks low. Raw volume can't tell them apart |
 | **Volatility** | *Negative* annualised 20-day volatility | Favours the more stable names (the low-volatility anomaly) |
-| **Sentiment** | Average sentiment of the last 7 days of headlines, from VADER and TextBlob | Adds the "fundamental" news view to the price signals. Live ranking only (see below) |
+| **Sentiment** | Average VADER + TextBlob sentiment of up to 5 headlines: NewsAPI's most relevant matches for the symbol (no date filter), or Yahoo Finance's latest news | Adds the "fundamental" news view to the price signals. Live ranking only (see below) |
 
 Default weights are 0.4 / 0.2 / 0.1 / 0.3 (momentum / volume / volatility / sentiment). In the dashboard you set them with sliders, and they are renormalised to sum to 100%.
 
 ## Dashboard
 
-The Streamlit app has four tabs:
+Pick the settings in the sidebar: universe size, a period preset (6M, 1Y, 2Y, 3Y or a custom range), the four factor weights and the sentiment source. Then click **Run screener**. Nothing reruns until you do. If you change a setting afterwards, a notice says the results on screen come from the previous run. On a first visit, **Run demo** runs the default settings with mock sentiment in one click. A status panel shows each stage as it runs (universe, prices, news, scoring, backtest).
 
-- **Top Stocks**: the ranked table with each factor's z-score
-- **Visualizations**: composite-score distribution, factor breakdown of the top picks, and a factor correlation heatmap
-- **Backtest**: equity curve against SPY, plus return, Sharpe, max drawdown, volatility, hit rate, turnover, costs and the p-value
-- **Stock Deep Dive**: factor scores, sentiment, price chart and last week's headlines for any single ticker
+The app has four pages:
 
-A toggle swaps real news for seeded mock sentiment, which gives a fast, deterministic demo that works offline. To keep news calls fast, the dashboard fetches real sentiment only for the top 20 tickers by market cap and scores the rest as neutral.
+- **Overview**: headline numbers (stocks screened, top pick, strategy vs SPY, significance), a small equity curve and cards for the top five picks
+- **Rankings**: the ranked table with color-coded factor z-scores, ticker search, a top-N switch and CSV download, plus the composite distribution and the factor correlation heatmap
+- **Backtest**: return, SPY return, excess return and Sharpe; drawdown, volatility, hit rate, turnover and costs; the p-value with a plain-English reading; the equity curve with a drawdown chart below it; and the caveats that come with it
+- **Stock detail**: one ticker's rank and percentile, its factor z-scores against the universe median, price and volume, and its sentiment with recent headlines
+
+A toggle swaps real news for seeded mock sentiment, which gives a fast, deterministic demo. To keep news calls fast, the dashboard fetches real sentiment only for the 20 largest tickers by market cap. The other tickers show a blank sentiment cell and count as neutral (a z-score of 0) in the composite.
 
 ## Quick start
 
@@ -108,7 +110,8 @@ sentiment/      VADER, TextBlob, optional FinBERT, weighted ensemble
 pipeline/       universe selection → data collection → scoring → backtest
 output/         console report for the CLI
 app.py          CLI entry point
-streamlit_app.py  dashboard
+streamlit_app.py  dashboard entry point (theme in .streamlit/config.toml)
+ui/             dashboard pages, cached pipeline stages, chart helpers
 tests/          pytest suite (network-free, uses fakeredis)
 ```
 

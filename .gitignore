@@ -14,8 +14,9 @@ build/
 # Redis data
 redis_data/
 
-# Streamlit
-.streamlit/
+# Streamlit (keep the shared theme, never local secrets)
+.streamlit/*
+!.streamlit/config.toml
 
 # Output files
 *.csv
