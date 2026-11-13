@@ -5,18 +5,20 @@ the UI can report progress per stage. Cache keys come only from hashable
 arguments (strings, numbers, tuples, DataFrames, dicts), never from the
 heavy components, which come from ``load_components``.
 """
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-from config.settings import WARMUP_DAYS
+from config.settings import WARMUP_DAYS, get_settings
 from data_sources.yahoo_finance import YahooFinanceSource
 from factors import MomentumFactor, SentimentFactor, VolatilityFactor, VolumeFactor
 from pipeline import BacktestEngine, DataCollector, ScoringEngine, UniverseSelector
 from sentiment.ensemble_sentiment import EnsembleSentiment
 
 TTL = 300  # seconds; results are cached for 5 minutes
-LIVE_SENTIMENT_LIMIT = 20  # live news is fetched only for the largest names, to keep runs fast
+NEWS_WORKERS = 8  # parallel news requests; every name in the universe gets news
 
 EMPTY_PRICES = ("Yahoo Finance returned no price data. It may be rate-limiting this server or be briefly "
                 "unavailable. Wait a minute, then run again.")
@@ -70,15 +72,35 @@ def mock_sentiment(tickers: tuple) -> dict:
     return {t: {"score": float(rng.uniform(-0.8, 0.8))} for t in tickers}
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def company_names() -> dict:
+    """Ticker -> company name from the S&P 500 list, for precise news searches."""
+    selector = UniverseSelector()
+    selector._fetch_sp500_csv()
+    return selector.company_names
+
+
+def fetch_news(data_source, tickers, names: dict) -> dict:
+    """Ticker -> recent headlines, fetched in parallel; failures count as no news."""
+    cfg = get_settings().sentiment
+
+    def one(ticker):
+        try:
+            return ticker, data_source.get_news_headlines(
+                ticker, lookback_days=cfg.lookback_days, company_name=names.get(ticker),
+                max_headlines=cfg.max_headlines)
+        except Exception:  # noqa: BLE001 - one name's news failing shouldn't stop the run
+            return ticker, []
+
+    with ThreadPoolExecutor(max_workers=NEWS_WORKERS) as pool:
+        return {t: h for t, h in pool.map(one, tickers) if h}
+
+
 @st.cache_data(ttl=TTL, show_spinner=False)
 def live_sentiment(tickers: tuple) -> dict:
-    """News sentiment for ``tickers``; names without headlines are left out (scored neutral)."""
+    """News sentiment for every ticker; names without headlines are left out (scored neutral)."""
     data_source, sentiment_model, _ = load_components()
-    news_by_ticker = {}
-    for ticker in tickers:
-        headlines = data_source.get_news_headlines(ticker, lookback_days=7)
-        if headlines:
-            news_by_ticker[ticker] = headlines
+    news_by_ticker = fetch_news(data_source, tickers, company_names())
     if not news_by_ticker:
         raise NoHeadlines()
     return sentiment_model.batch_analyze(news_by_ticker)
@@ -103,4 +125,7 @@ def backtest(price_data: pd.DataFrame, weights: tuple, start_date: str) -> dict:
 @st.cache_data(ttl=600, show_spinner=False)
 def headlines(ticker: str) -> list:
     data_source, _, _ = load_components()
-    return data_source.get_news_headlines(ticker, lookback_days=7)
+    cfg = get_settings().sentiment
+    return data_source.get_news_headlines(ticker, lookback_days=cfg.lookback_days,
+                                          company_name=company_names().get(ticker),
+                                          max_headlines=cfg.max_headlines)

@@ -69,7 +69,7 @@ def run_pipeline(params: dict):
                 in_data = tuple(prices.index.get_level_values("Ticker").unique())
                 sentiment = stages.mock_sentiment(in_data)
             else:
-                news_tickers = tuple(tickers[: stages.LIVE_SENTIMENT_LIMIT])
+                news_tickers = tuple(tickers)
                 status.update(label=f"Fetching news ({len(news_tickers)} tickers)…")
                 st.write(f":material/newspaper: Fetching news ({len(news_tickers)} tickers)")
                 try:
@@ -145,8 +145,8 @@ def render_sidebar():
 
         st.toggle("Mock sentiment", key="w_mock",
                   help="On: seeded random sentiment for every name. Fast, offline and reproducible, but not "
-                       f"real. Off: live news sentiment for the {stages.LIVE_SENTIMENT_LIMIT} largest names, "
-                       "which adds a few seconds per name on a cold cache. Prices are always real.")
+                       f"real. Off: live news sentiment for every name in the universe, which adds some "
+                       "seconds on a cold cache. Prices are always real.")
 
         st.divider()
         st.button("Run screener", type="primary", icon=":material/play_arrow:", width="stretch",
@@ -167,7 +167,7 @@ def render_header():
                  f":gray-badge[:material/stacks: Universe: {len(results['universe'])}]")
     st.markdown(
         "Ranks large-cap US stocks on momentum, volume, volatility and news sentiment, then backtests the "
-        f"price factors against SPY. &nbsp; {chips}"
+        f"price factors against an equal-weight universe and SPY. &nbsp; {chips}"
     )
 
 

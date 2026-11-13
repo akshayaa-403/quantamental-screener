@@ -82,13 +82,20 @@ class TestVolumeFactor:
         result = VolumeFactor().compute(data)
         assert isinstance(result, pd.Series)
         assert result.index.equals(data.index)
-        assert result.iloc[:19].isna().all()
-        assert result.iloc[19:].notna().all()
+        # 20-day average volume (first value on row 19), then a 10-day mean of it.
+        assert result.iloc[:28].isna().all()
+        assert result.iloc[28:].notna().all()
+
+    def test_smooths_signed_relative_volume(self, price_data):
+        data = price_data(["AAPL"], periods=60, seed=4)
+        daily = VolumeFactor(smooth=1).compute(data)
+        smoothed = VolumeFactor(smooth=10).compute(data)
+        pd.testing.assert_series_equal(smoothed, daily.rolling(10).mean(), check_names=False)
 
     def test_volume_spike_takes_sign_of_return(self):
-        closes = np.full(25, 100.0)
+        closes = np.full(40, 100.0)
         closes[-1] = 90.0  # sell-off on the last day
-        volume = np.full(25, 1_000_000.0)
+        volume = np.full(40, 1_000_000.0)
         volume[-1] = 5_000_000.0
         selloff = _single_ticker(closes, volume=volume)
         rally = _single_ticker(np.r_[closes[:-1], 110.0], volume=volume)
@@ -97,6 +104,11 @@ class TestVolumeFactor:
 
 
 class TestVolatilityFactor:
+    def test_default_window_is_sixty_days(self, price_data):
+        result = VolatilityFactor().compute(price_data(["AAPL"], periods=80))
+        assert result.iloc[:60].isna().all()
+        assert result.iloc[60:].notna().all()
+
     def test_warm_up_is_nan(self, price_data):
         result = VolatilityFactor(window=20).compute(price_data(["AAPL"], periods=40))
         assert result.iloc[:20].isna().all()
@@ -115,7 +127,7 @@ class TestVolatilityFactor:
             frames.append(df)
         data = pd.concat(frames, ignore_index=True).set_index(["Ticker", "Date"]).sort_index()
 
-        result = VolatilityFactor().compute(data)
+        result = VolatilityFactor(window=20).compute(data)
 
         low_score = result.xs("LOW_VOL", level="Ticker").mean()
         high_score = result.xs("HIGH_VOL", level="Ticker").mean()

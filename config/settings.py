@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class RedisSettings(BaseSettings):
@@ -16,7 +17,9 @@ class UniverseSettings(BaseSettings):
     
     size: int = 50
     min_market_cap: float = 5e9
-    min_volume: float = 1e6
+    # Average daily *dollar* volume (price x shares). Share volume alone treats
+    # a $20 stock and a $900 stock alike; dollar volume measures tradability.
+    min_dollar_volume: float = 2e7
 
 class FactorWeights(BaseSettings):
     """Factor weight configuration - reads from FACTOR_* environment variables"""
@@ -34,9 +37,24 @@ class BacktestSettings(BaseSettings):
     period: str = "1y"
     rebalance_freq: int = 5  # days
     top_n_stocks: int = 10
-    risk_free_rate: float = 0.0  # annualized; used in the Sharpe ratio
+    # Annualized risk-free rate for the Sharpe ratio. None (default) uses the
+    # daily 13-week T-bill yield (^IRX) over the backtest window.
+    risk_free_rate: Optional[float] = None
     transaction_cost_bps: float = 10.0  # cost per trade, in basis points of notional
     n_bootstrap: int = 2000  # random portfolios drawn for the significance test
+    # Last share of the trading window reported separately as a holdout, so
+    # weights tuned on the earlier part can be checked on data they never saw.
+    holdout_fraction: float = 0.3
+
+class SentimentSettings(BaseSettings):
+    """News sentiment configuration - reads from SENTIMENT_* environment variables"""
+    model_config = SettingsConfigDict(env_prefix="SENTIMENT_")
+
+    lookback_days: int = 7  # only headlines published in this many days count
+    max_headlines: int = 10
+    # Bayesian shrinkage toward neutral: a score from n headlines is scaled by
+    # n / (n + prior_headlines), so one headline can't produce an extreme score.
+    prior_headlines: float = 3.0
 
 # Calendar days of history fetched before the backtest window for factor
 # warm-up: 252 trading days of 12-minus-1 momentum plus a holiday margin.
@@ -62,6 +80,7 @@ class Settings(BaseSettings):
     universe: UniverseSettings = UniverseSettings()
     weights: FactorWeights = FactorWeights()
     backtest: BacktestSettings = BacktestSettings()
+    sentiment: SentimentSettings = SentimentSettings()
     
 @lru_cache()
 def get_settings() -> Settings:

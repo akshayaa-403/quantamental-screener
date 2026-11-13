@@ -47,6 +47,8 @@ def app(price_data, monkeypatch):
         t: {"score": 0.4, "confidence": 0.7, "model": "ensemble"} for t in tickers if t in WITH_NEWS})
     monkeypatch.setattr(stages, "headlines", lambda ticker: [f"{ticker} beats $estimates", "Second headline"])
     monkeypatch.setattr(BacktestEngine, "_fetch_benchmark", benchmark)
+    monkeypatch.setattr(BacktestEngine, "_fetch_risk_free",
+                        lambda self, start_date, end_date: pd.Series(0.04, index=pd.bdate_range(start_date, end_date)))
     return AppTest.from_file(APP, default_timeout=120)
 
 
@@ -81,19 +83,21 @@ def test_demo_run_uses_mock_sentiment(app):
 def test_every_page_renders_after_run(app):
     at = run_screener(app)
     # Overview (default page)
-    assert [m.label for m in at.metric][:4] == ["Stocks screened", "Top pick", "Strategy vs SPY",
-                                                 "Significance (p-value)"]
+    assert [m.label for m in at.metric][:4] == ["Stocks screened", "Top pick", "Significance (p-value)",
+                                                 "Strategy vs universe"]
     # Rankings
     at.button(key="ov_rankings").click().run()
     assert not at.exception, at.exception
     assert len(at.dataframe) == 1
+    assert "Price-only rank" in at.dataframe[0].value.columns
     # Backtest (a plain rerun returns AppTest to the default page first)
     at.run().button(key="ov_backtest").click().run()
     assert not at.exception, at.exception
     labels = {m.label for m in at.metric}
-    assert {"Strategy return", "SPY return", "Excess return", "Sharpe ratio", "Max drawdown",
-            "Turnover", "Costs paid"} <= labels
-    assert "survivorship bias" in texts(at).lower()
+    assert {"Strategy return", "vs equal-weight universe", "vs SPY", "Sharpe ratio", "Max drawdown",
+            "Turnover", "Costs paid", "Universe EW", "p-value"} <= labels
+    assert "Holdout" in texts(at)
+    assert "survivorship and size bias" in texts(at).lower()
     # Stock detail, opened from a top-pick card
     top = at.run().metric[1].value
     at.button(key=f"ov_open_{top}").click().run()

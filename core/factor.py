@@ -8,6 +8,9 @@ class Factor(ABC):
     # rows still inside a factor's warm-up window get no composite score. An
     # optional factor (sentiment) is simply treated as neutral when missing.
     required: bool = True
+    # A point-in-time factor can be computed for any past date from data known
+    # then, so it can be backtested. Sentiment is a snapshot of today's news.
+    point_in_time: bool = True
     
     @abstractmethod
     def compute(self, data: pd.DataFrame, **kwargs) -> pd.Series:

@@ -5,7 +5,12 @@ from core.factor import Factor
 class VolatilityFactor(Factor):
     name = "volatility"
 
-    def __init__(self, window: int = 20):
+    def __init__(self, window: int = 60):
+        """
+        ``window``: trading days of returns in the volatility estimate. 60 days
+        (about 3 months) is at the short end of the windows used in low-volatility
+        research (60 to 252 days); 20 days is mostly noise and churns the portfolio.
+        """
         self.window = window
     
     def compute(self, data: pd.DataFrame, **kwargs) -> pd.Series:

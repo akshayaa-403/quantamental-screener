@@ -19,7 +19,8 @@ class UniverseSelector:
         config = config or {}
         self.universe_size = config.get('size', settings.universe.size)
         self.min_market_cap = config.get('min_market_cap', settings.universe.min_market_cap)
-        self.min_volume = config.get('min_volume', settings.universe.min_volume)
+        self.min_dollar_volume = config.get('min_dollar_volume', settings.universe.min_dollar_volume)
+        self.company_names: Dict[str, str] = {}
 
     def select(self) -> List[str]:
         tickers = self._fetch_sp500_csv() or self._fetch_fallback_tickers()
@@ -32,8 +33,8 @@ class UniverseSelector:
 
     def _apply_filters(self, tickers: List[str]) -> List[str]:
         """
-        Keep names above ``min_market_cap`` and ``min_volume`` (average daily
-        share volume), largest market cap first, so the universe is the biggest
+        Keep names above ``min_market_cap`` and ``min_dollar_volume`` (3-month
+        average share volume x last price), largest market cap first, so the universe is the biggest
         liquid names rather than whatever the source list happens to put first.
 
         These are *today's* market caps and *today's* index members, so a
@@ -42,7 +43,7 @@ class UniverseSelector:
         point-in-time liquidity screen, but a clean fix needs historical
         constituent lists, which no free source here provides.
         """
-        if not self.min_market_cap and not self.min_volume:
+        if not self.min_market_cap and not self.min_dollar_volume:
             return tickers
         fundamentals = self._fetch_fundamentals(tickers)
         if not fundamentals:
@@ -51,18 +52,21 @@ class UniverseSelector:
         passing = [
             t for t, (cap, vol) in fundamentals.items()
             if cap is not None and vol is not None
-            and cap >= self.min_market_cap and vol >= self.min_volume
+            and cap >= self.min_market_cap and vol >= self.min_dollar_volume
         ]
         logger.info(f"{len(passing)}/{len(tickers)} tickers pass market cap >= {self.min_market_cap:,.0f} "
-                    f"and volume >= {self.min_volume:,.0f}")
+                    f"and dollar volume >= {self.min_dollar_volume:,.0f}")
         return sorted(passing, key=lambda t: fundamentals[t][0], reverse=True)
 
     def _fetch_fundamentals(self, tickers: List[str]) -> Dict[str, tuple]:
-        """Return ticker -> (market cap, 3-month average volume); unknowns are None."""
+        """Return ticker -> (market cap, average daily dollar volume); unknowns are None."""
         def one(ticker: str):
             try:
                 info = yf.Ticker(ticker).fast_info
-                return ticker, (_number(info.get('marketCap')), _number(info.get('threeMonthAverageVolume')))
+                shares = _number(info.get('threeMonthAverageVolume'))
+                price = _number(info.get('lastPrice'))
+                dollar_volume = shares * price if shares is not None and price is not None else None
+                return ticker, (_number(info.get('marketCap')), dollar_volume)
             except Exception as e:
                 logger.debug(f"No fundamentals for {ticker}: {e}")
                 return ticker, (None, None)
@@ -81,7 +85,13 @@ class UniverseSelector:
             resp.raise_for_status()
             df = pd.read_csv(io.StringIO(resp.text))
             if 'Symbol' in df.columns:
-                tickers = df['Symbol'].dropna().astype(str).str.strip().tolist()
+                df = df.dropna(subset=['Symbol'])
+                tickers = df['Symbol'].astype(str).str.strip().tolist()
+                if 'Security' in df.columns:
+                    # Company names make news searches precise ("T" alone matches anything).
+                    self.company_names = {
+                        t.replace('.', '-'): str(n).strip() for t, n in zip(tickers, df['Security'])
+                    }
                 logger.info(f"Fetched {len(tickers)} S&P 500 tickers from CSV")
                 return tickers
         except Exception as e:

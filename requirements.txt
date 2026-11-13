@@ -24,8 +24,9 @@ click>=8.1.0
 tqdm>=4.65.0
 tenacity>=8.0.0
 
-# Caching
+# Caching (DataFrames are stored as Parquet, never pickled)
 redis>=5.0.0
+pyarrow>=14.0.0
 
 # Configuration
 pydantic>=2.4.0

@@ -46,18 +46,28 @@ class ScoringEngine:
             # whole panel would let future values move past scores.
             factor_scores[factor.name] = raw.groupby(level='Date').transform(self._standardize_series)
 
-        combined = pd.DataFrame(factor_scores)
-        if factor_scores:
-            combined['composite'] = sum(
-                combined[name] * active.get(name, 0.0) for name in factor_scores
-            )
-        else:
-            combined['composite'] = 0.0
-        combined.loc[warming_up.reindex(combined.index).to_numpy(), 'composite'] = np.nan
+        combined = pd.DataFrame(factor_scores, index=data.index)
+        pit_names = [f.name for f in self.factors if f.point_in_time]
+        combined['composite'] = self._weighted_sum(combined, list(factor_scores), active)
+        # The same blend restricted to point-in-time factors: exactly what the
+        # backtest trades on. Showing it next to the live composite makes it
+        # clear which part of today's ranking the backtest actually tested.
+        combined['composite_pit'] = self._weighted_sum(combined, pit_names, active)
+        mask = warming_up.reindex(combined.index).to_numpy()
+        combined.loc[mask, ['composite', 'composite_pit']] = np.nan
 
         # Rank per date
-        combined['rank'] = combined.groupby(level='Date')['composite'].rank(ascending=False)
+        by_date = combined.groupby(level='Date')
+        combined['rank'] = by_date['composite'].rank(ascending=False)
+        combined['rank_pit'] = by_date['composite_pit'].rank(ascending=False)
         return combined
+
+    @staticmethod
+    def _weighted_sum(scores: pd.DataFrame, names: List[str], weights: Dict[str, float]) -> pd.Series:
+        total = pd.Series(0.0, index=scores.index)
+        for name in names:
+            total = total + scores[name] * weights.get(name, 0.0)
+        return total
 
     @staticmethod
     def _standardize_series(s: pd.Series) -> pd.Series:

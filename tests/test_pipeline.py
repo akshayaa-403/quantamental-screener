@@ -15,19 +15,19 @@ from pipeline import BacktestEngine, DataCollector, ScoringEngine, UniverseSelec
 
 class TestUniverseSelector:
     def test_respects_universe_size(self):
-        selector = UniverseSelector({"size": 3, "min_market_cap": 0, "min_volume": 0})
+        selector = UniverseSelector({"size": 3, "min_market_cap": 0, "min_dollar_volume": 0})
         # Stub the (network) constituent fetch with a known list.
         selector._fetch_sp500_csv = lambda: ["AAPL", "MSFT", "GOOGL", "AMZN", "META"]
         assert selector.select() == ["AAPL", "MSFT", "GOOGL"]
 
     def test_filters_and_orders_by_market_cap(self):
-        selector = UniverseSelector({"size": 2, "min_market_cap": 5e9, "min_volume": 1e6})
+        selector = UniverseSelector({"size": 2, "min_market_cap": 5e9, "min_dollar_volume": 2e7})
         selector._fetch_sp500_csv = lambda: ["SMALL", "THIN", "MID", "BIG", "UNKNOWN"]
         selector._fetch_fundamentals = lambda tickers: {
-            "SMALL": (1e9, 5e6),      # fails market cap
-            "THIN": (50e9, 1e5),      # fails volume
-            "MID": (20e9, 2e6),
-            "BIG": (900e9, 3e7),
+            "SMALL": (1e9, 5e8),      # fails market cap
+            "THIN": (50e9, 1e7),      # fails dollar volume
+            "MID": (20e9, 3e7),
+            "BIG": (900e9, 9e9),
             "UNKNOWN": (None, None),  # no data -> excluded
         }
         assert selector.select() == ["BIG", "MID"]
@@ -39,12 +39,20 @@ class TestUniverseSelector:
         assert selector.select() == ["AAPL", "MSFT"]
 
     def test_share_classes_use_yahoo_spelling(self):
-        selector = UniverseSelector({"size": 5, "min_market_cap": 0, "min_volume": 0})
+        selector = UniverseSelector({"size": 5, "min_market_cap": 0, "min_dollar_volume": 0})
         selector._fetch_sp500_csv = lambda: ["AAPL", "BRK.B", "BF.B"]
         assert selector.select() == ["AAPL", "BRK-B", "BF-B"]
 
+    def test_keeps_company_names_from_constituent_list(self, monkeypatch):
+        csv = "Symbol,Security\nAAPL,Apple Inc.\nBRK.B,Berkshire Hathaway\n"
+        response = Mock(text=csv, raise_for_status=lambda: None)
+        monkeypatch.setattr("pipeline.universe_selector.requests.get", lambda url, timeout: response)
+        selector = UniverseSelector({"size": 5, "min_market_cap": 0, "min_dollar_volume": 0})
+        assert selector.select() == ["AAPL", "BRK-B"]
+        assert selector.company_names == {"AAPL": "Apple Inc.", "BRK-B": "Berkshire Hathaway"}
+
     def test_falls_back_to_hardcoded_when_sources_empty(self):
-        selector = UniverseSelector({"size": 4, "min_market_cap": 0, "min_volume": 0})
+        selector = UniverseSelector({"size": 4, "min_market_cap": 0, "min_dollar_volume": 0})
         selector._fetch_sp500_csv = lambda: []
         tickers = selector.select()
         assert len(tickers) == 4
@@ -61,7 +69,7 @@ class TestDataCollector:
 
 def _short_factors():
     """Factors with short windows so synthetic histories warm up quickly."""
-    return [MomentumFactor(lookback=20, skip=5), VolumeFactor(), VolatilityFactor()]
+    return [MomentumFactor(lookback=20, skip=5), VolumeFactor(window=20, smooth=5), VolatilityFactor(window=20)]
 
 
 class TestScoringEngine:
@@ -92,6 +100,16 @@ class TestScoringEngine:
         momentum = MomentumFactor()
         ScoringEngine([momentum], weights={"momentum": 0.7})
         assert momentum.weight == 1.0
+
+    def test_point_in_time_composite_excludes_sentiment(self, price_data):
+        data = price_data(["AAPL", "MSFT", "GOOGL"], periods=40)
+        weights = {"momentum": 0.5, "volume": 0.3, "volatility": 0.2, "sentiment": 0.9}
+        engine = ScoringEngine(_short_factors() + [SentimentFactor()], weights=weights)
+        with_news = engine.compute(data, {"AAPL": 0.9, "MSFT": -0.9})
+        price_only = ScoringEngine(_short_factors(), weights=weights).compute(data)
+        pd.testing.assert_series_equal(with_news["composite_pit"], price_only["composite"], check_names=False)
+        pd.testing.assert_series_equal(with_news["rank_pit"], price_only["rank"], check_names=False)
+        assert not with_news["composite"].equals(with_news["composite_pit"])
 
     def test_missing_sentiment_is_neutral(self):
         dates = pd.date_range("2024-01-01", periods=2, freq="B")
@@ -150,7 +168,7 @@ class TestScoringEngine:
 
 def _engine(data, monkeypatch, **config):
     config = {"top_n": 2, "rebalance_freq": 5, "transaction_cost_bps": 0.0,
-              "min_volume": 0, "n_bootstrap": 200, **config}
+              "min_dollar_volume": 0, "n_bootstrap": 200, "risk_free_rate": 0.0, **config}
     engine = BacktestEngine(config)
     # Avoid the network: synthetic benchmark aligned to the price dates.
     dates = data.index.get_level_values("Date").unique().sort_values()
@@ -184,15 +202,16 @@ class TestBacktestEngine:
         for key in [
             "strategy_return", "benchmark_return", "excess_return", "sharpe_ratio",
             "max_drawdown", "volatility", "hit_rate", "p_value", "n_rebalances",
-            "turnover", "total_costs", "final_value", "initial_capital",
+            "turnover", "total_costs", "final_value", "initial_capital", "universe_return",
+            "excess_vs_universe", "risk_free_rate", "risk_free_source", "holdout", "universe_series",
         ]:
             assert key in result
         assert 0 < result["p_value"] <= 1
         series = result["portfolio_series"]
         assert isinstance(series, pd.Series)
-        # Trading starts once every factor is warmed up (20-day windows) and
-        # one more day for the signal lag, not on the first day of data.
-        assert series.index[0] == data.index.get_level_values("Date").unique()[21]
+        # Trading starts once every factor is warmed up (the smoothed volume
+        # factor is last, on row 23) plus one day for the signal lag.
+        assert series.index[0] == data.index.get_level_values("Date").unique()[24]
         # The equity curve starts at the reported initial capital, so a chart
         # normalized off it lines up with the reported strategy return.
         assert result["initial_capital"] == 1_000_000
@@ -244,22 +263,67 @@ class TestBacktestEngine:
         assert costly["final_value"] < free["final_value"]
         assert costly["total_costs"] > 0 and free["total_costs"] == 0
 
-    def test_only_changed_names_are_traded(self, monkeypatch):
-        # Steady, distinct growth rates: the momentum ranking never changes, so
-        # after the first purchase there is nothing to trade.
-        dates = pd.date_range("2024-01-01", periods=60, freq="B")
+    @staticmethod
+    def _steady(growths, periods=60):
+        dates = pd.date_range("2024-01-01", periods=periods, freq="B")
         frames = [
             pd.DataFrame({
                 "Ticker": ticker, "Date": dates,
-                "Close": 100 * (1 + growth) ** np.arange(60), "Volume": 2_000_000,
+                "Close": 100 * (1 + growth) ** np.arange(periods), "Volume": 2_000_000,
             })
-            for ticker, growth in [("A", 0.004), ("B", 0.003), ("C", 0.002), ("D", 0.001)]
+            for ticker, growth in growths
         ]
-        data = pd.concat(frames).set_index(["Ticker", "Date"]).sort_index()
+        return pd.concat(frames).set_index(["Ticker", "Date"]).sort_index()
+
+    def test_rebalances_back_to_equal_weight(self, monkeypatch):
+        # A and B always rank top (fixed momentum order) but grow at different
+        # rates. With a reset to 1/N at every rebalance, each holding period's
+        # return is exactly the mean of the two names' returns.
+        data = self._steady([("A", 0.01), ("B", 0.002), ("C", 0.001), ("D", 0.0)])
+        result = _engine(data, monkeypatch).run(ScoringEngine([MomentumFactor(lookback=20, skip=5)]), data)
+        series = result["portfolio_series"]
+        rebalances = series.index[::5]
+        close = data["Close"].unstack("Ticker")
+        for start, end in zip(rebalances[:-1], rebalances[1:]):
+            expected = (close.loc[end, ["A", "B"]] / close.loc[start, ["A", "B"]]).mean()
+            assert series[end] / series[start] == pytest.approx(expected, rel=1e-12)
+
+    def test_rebalancing_trades_only_the_drift(self, monkeypatch):
+        # Picks never change, so after the first purchase only the small drift
+        # back to equal weight is traded, and it pays costs.
+        data = self._steady([("A", 0.004), ("B", 0.003), ("C", 0.002), ("D", 0.001)])
         scorer = ScoringEngine([MomentumFactor(lookback=20, skip=5)])
-        result = _engine(data, monkeypatch).run(scorer, data)
+        result = _engine(data, monkeypatch, transaction_cost_bps=10).run(scorer, data)
         assert result["n_rebalances"] > 1
-        assert result["turnover"] == pytest.approx(1.0)
+        assert 1.0 < result["turnover"] < 1.05
+        # Costs are paid out of the portfolio: 10 bps of everything traded.
+        assert result["total_costs"] == pytest.approx(result["turnover"] * 1_000_000 * 1e-3, rel=1e-6)
+
+    def test_universe_benchmark_equals_strategy_when_holding_everything(self, price_data, monkeypatch):
+        data = price_data(["AAPL", "MSFT", "GOOGL", "AMZN"], periods=60, seed=7)
+        result = _engine(data, monkeypatch, top_n=4).run(ScoringEngine(_short_factors()), data)
+        pd.testing.assert_series_equal(result["portfolio_series"], result["universe_series"], check_names=False)
+        assert result["excess_vs_universe"] == pytest.approx(0.0, abs=1e-12)
+
+    def test_holdout_covers_the_end_of_the_window(self, price_data, monkeypatch):
+        data = price_data(["AAPL", "MSFT", "GOOGL", "AMZN"], periods=120, seed=7)
+        result = _engine(data, monkeypatch, holdout_fraction=0.3).run(ScoringEngine(_short_factors()), data)
+        hold, dates = result["holdout"], result["portfolio_series"].index
+        assert hold["start_date"] >= dates[int(len(dates) * 0.7)]
+        assert 0 < hold["n_rebalances"] < result["n_rebalances"]
+        port = result["portfolio_series"]
+        assert hold["strategy_return"] == pytest.approx(port.iloc[-1] / port[hold["start_date"]] - 1)
+        assert 0 < hold["p_value"] <= 1
+
+    def test_dollar_volume_screen(self, price_data, monkeypatch):
+        data = price_data(["AAPL", "MSFT", "GOOGL", "AMZN"], periods=60, seed=7)
+        thin = data.copy()
+        thin.loc["AMZN", "Volume"] = 1  # about $100 a day: never tradable
+        result = _engine(thin, monkeypatch, top_n=3, min_dollar_volume=1e6).run(
+            ScoringEngine(_short_factors()), thin)
+        # With AMZN screened out only three names are eligible, so the
+        # strategy holds all of them and matches the equal-weight universe.
+        pd.testing.assert_series_equal(result["portfolio_series"], result["universe_series"], check_names=False)
 
     def test_start_date_limits_trading_window(self, price_data, monkeypatch):
         data = price_data(["AAPL", "MSFT", "GOOGL", "AMZN"], periods=80, seed=7)
@@ -268,6 +332,25 @@ class TestBacktestEngine:
             ScoringEngine(_short_factors()), data, start_date=str(start.date())
         )
         assert result["portfolio_series"].index[0] == start
+
+    def test_risk_free_rate_defaults_to_t_bill_yield(self, price_data, monkeypatch):
+        data = price_data(["AAPL", "MSFT", "GOOGL", "AMZN"], periods=60, seed=7)
+        engine = _engine(data, monkeypatch, risk_free_rate=None)
+        dates = data.index.get_level_values("Date").unique()
+        monkeypatch.setattr(engine, "_fetch_risk_free", lambda s, e: pd.Series(0.05, index=dates))
+        result = engine.run(ScoringEngine(_short_factors()), data)
+        assert result["risk_free_rate"] == pytest.approx(0.05)
+        assert result["risk_free_source"] == "13-week T-bill"
+        fixed = _engine(data, monkeypatch, risk_free_rate=0.05).run(ScoringEngine(_short_factors()), data)
+        assert result["sharpe_ratio"] == pytest.approx(fixed["sharpe_ratio"])
+
+    def test_missing_t_bill_data_is_flagged(self, price_data, monkeypatch):
+        data = price_data(["AAPL", "MSFT", "GOOGL", "AMZN"], periods=60, seed=7)
+        engine = _engine(data, monkeypatch, risk_free_rate=None)
+        monkeypatch.setattr(engine, "_fetch_risk_free", lambda s, e: pd.Series(dtype=float))
+        result = engine.run(ScoringEngine(_short_factors()), data)
+        assert result["risk_free_rate"] == 0.0
+        assert result["risk_free_source"].startswith("unavailable")
 
     def test_risk_free_rate_lowers_sharpe(self, price_data, monkeypatch):
         data = price_data(["AAPL", "MSFT", "GOOGL", "AMZN"], periods=60, seed=7)

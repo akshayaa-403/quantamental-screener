@@ -1,6 +1,6 @@
 # Quantamental Screener
 
-Ranks large-cap US stocks on a weighted mix of price momentum, volume, volatility and news sentiment, then backtests the ranking against SPY, with a significance test so you can tell skill from luck.
+Ranks large-cap US stocks on a weighted mix of price momentum, volume, volatility and news sentiment, then backtests the ranking against an equal-weight portfolio of the same universe and SPY, with a significance test so you can tell skill from luck.
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
@@ -16,19 +16,19 @@ Ranks large-cap US stocks on a weighted mix of price momentum, volume, volatilit
 
 ## What it does
 
-1. **Picks a universe.** It takes the current S&P 500, keeps names above a market-cap and average-volume floor, and keeps the largest *N* by market cap.
+1. **Picks a universe.** It takes the current S&P 500, keeps names above a market-cap and average-dollar-volume floor, and keeps the largest *N* by market cap.
 2. **Scores every stock on four factors.** Each factor is z-scored across the day's universe and clipped to ±3, then combined using weights you set.
 3. **Ranks them**, in a terminal report from the CLI or in an interactive Streamlit dashboard.
-4. **Backtests the ranking.** It holds the top *N*, rebalances every *k* days, charges transaction costs and compares the result with SPY.
+4. **Backtests the ranking.** It holds the top *N* at equal weight, rebalances every *k* days, charges transaction costs and compares the result with an equal-weight portfolio of the whole universe and with SPY.
 
 ## The factors
 
 | Factor | Definition | Why |
 |---|---|---|
 | **Momentum** | 12-minus-1: return from 12 months ago to 1 month ago | Skips the latest month because one-month returns tend to reverse |
-| **Volume** | Volume ÷ 20-day average volume, signed by the day's return | Heavy buying ranks high and heavy selling ranks low. Raw volume can't tell them apart |
-| **Volatility** | *Negative* annualised 20-day volatility | Favours the more stable names (the low-volatility anomaly) |
-| **Sentiment** | Average VADER + TextBlob sentiment of up to 5 headlines: NewsAPI's most relevant matches for the symbol (no date filter), or Yahoo Finance's latest news | Adds the "fundamental" news view to the price signals. Live ranking only (see below) |
+| **Volume** | 10-day average of (volume ÷ 20-day average volume) × sign of the day's return | Sustained buying ranks high and sustained selling ranks low. Raw volume can't tell them apart, and a single day is mostly noise |
+| **Volatility** | *Negative* annualised 60-day volatility | Favours the more stable names (the low-volatility anomaly). Shorter windows are noisy and churn the portfolio |
+| **Sentiment** | VADER (with a finance word list) + TextBlob sentiment of up to 10 headlines from the last 7 days, shrunk toward neutral by *n* / (*n* + 3) for *n* headlines. NewsAPI is searched for the company name in titles; Yahoo Finance's news for the ticker is the fallback | Adds the "fundamental" news view to the price signals. Live ranking only (see below) |
 
 Default weights are 0.4 / 0.2 / 0.1 / 0.3 (momentum / volume / volatility / sentiment). In the dashboard you set them with sliders, and they are renormalised to sum to 100%.
 
@@ -43,7 +43,7 @@ The app has four pages:
 - **Backtest**: return, SPY return, excess return and Sharpe; drawdown, volatility, hit rate, turnover and costs; the p-value with a plain-English reading; the equity curve with a drawdown chart below it; and the caveats that come with it
 - **Stock detail**: one ticker's rank and percentile, its factor z-scores against the universe median, price and volume, and its sentiment with recent headlines
 
-A toggle swaps real news for seeded mock sentiment, which gives a fast, deterministic demo. To keep news calls fast, the dashboard fetches real sentiment only for the 20 largest tickers by market cap. The other tickers show a blank sentiment cell and count as neutral (a z-score of 0) in the composite.
+A toggle swaps real news for seeded mock sentiment, which gives a fast, deterministic demo. With real news, every name in the universe is searched (in parallel). Names with no headlines in the last week show a blank sentiment cell and count as neutral (a z-score of 0) in the composite. The Rankings table also shows a **Price-only rank**: the ranking without sentiment, which is what the backtest tests.
 
 ## Quick start
 
@@ -68,7 +68,7 @@ docker-compose up -d       # Streamlit on :8501 + Redis, caching enabled
 
 ### Redis caching (optional)
 
-Price and fundamentals downloads are cached in Redis, which makes repeat runs much faster. Caching is **off by default**. To use it outside Docker:
+Price downloads and headlines are cached in Redis, which makes repeat runs much faster. Values are stored as Parquet or JSON, never pickled, so a shared Redis can't inject code. Caching is **off by default**. To use it outside Docker:
 
 ```bash
 docker-compose up -d redis
@@ -82,9 +82,10 @@ Everything is set through environment variables or `.env`. See [.env.example](.e
 
 | Prefix | Controls |
 |---|---|
-| `UNIVERSE_*` | Universe size, minimum market cap, minimum volume |
+| `UNIVERSE_*` | Universe size, minimum market cap, minimum average dollar volume |
 | `FACTOR_*` | Factor weights |
-| `BACKTEST_*` | Period, rebalance frequency, top N, risk-free rate, cost in bps, bootstrap draws |
+| `BACKTEST_*` | Period, rebalance frequency, top N, risk-free rate (default: daily T-bill yield), cost in bps, bootstrap draws, holdout share |
+| `SENTIMENT_*` | News lookback days, headlines per name, shrinkage prior |
 | `REDIS_*` | Enable flag, URL, TTLs |
 | `NEWS_API_KEY` | [NewsAPI](https://newsapi.org) key for headlines. Without it, falls back to yfinance news |
 | `USE_MOCK_SENTIMENT` | `true` for seeded mock sentiment (offline demo) |
@@ -94,10 +95,11 @@ Everything is set through environment variables or `.env`. See [.env.example](.e
 - **No lookahead.** Scores on day *t* use data up to the close of *t*, and the portfolio trades on them at the close of *t+1*. Tests in `tests/test_pipeline.py` change future prices and check that past scores and past equity don't move.
 - **No sentiment.** News sentiment is a snapshot of today's headlines, so it only feeds the live ranking. Applying it to past dates would be lookahead.
 - **Warm-up.** Factors are `NaN` until they have enough history (momentum needs about 13 months). About 400 extra calendar days are downloaded before the window, so trading starts on day one.
-- **Costs and turnover.** Only names that leave or enter the top N are traded, and each trade pays `BACKTEST_TRANSACTION_COST_BPS`.
-- **Significance.** `p_value` is the share of random portfolios, drawn from the same eligible names at each rebalance, that matched the strategy's picks (gross of costs). A year of weekly rebalancing is about 50 decisions. Treat a large p-value as "indistinguishable from luck".
-- **Survivorship bias remains.** The universe is *today's* S&P 500, ranked by *today's* market cap, so the backtest can never pick a company that has since dropped out of the index. A clean fix needs point-in-time constituent lists. The backtest's own liquidity screen (trailing 20-day volume, known the day before) is point-in-time.
-- **Overfitting.** If you tune factor weights, tune them on one period and check them on another: `BacktestEngine.run(..., start_date=..., end_date=...)` restricts the trading window while still using earlier data for warm-up.
+- **Equal weight, costs and turnover.** Each rebalance resets the portfolio to 1/*N* per name, and every trade that takes (new names, exits and the trims and top-ups of held names) pays `BACKTEST_TRANSACTION_COST_BPS` out of the portfolio.
+- **Significance.** `p_value` is the share of random portfolios, drawn from the same eligible names at each rebalance, that matched the strategy's picks (gross of costs). The strategy is equal-weighted per period, so it is exactly what the random portfolios are compared with. A year of weekly rebalancing is about 50 decisions. Treat a large p-value as "indistinguishable from luck".
+- **Survivorship and size bias remain.** The universe is *today's* S&P 500, ranked by *today's* market cap: every name is a company that grew large, and none has since dropped out of the index. Any portfolio of them tends to beat SPY in hindsight, so the gap to SPY flatters the strategy. Two things correct for it: the **equal-weight universe** benchmark (every eligible name, same rebalance dates, gross of costs) shares the bias, so `excess_vs_universe` isolates the stock selection, and the p-value draws from the same names. A clean fix needs point-in-time constituent lists. The backtest's own liquidity screen (trailing 20-day dollar volume, known the day before) is point-in-time.
+- **Sharpe ratio.** Uses the daily 13-week T-bill yield (`^IRX`) as the risk-free rate unless `BACKTEST_RISK_FREE_RATE` fixes one. If the download fails, the result says so and uses 0%.
+- **Overfitting.** The last `BACKTEST_HOLDOUT_FRACTION` (30%) of the window is reported separately as a holdout. Tune weights while looking at the earlier part only, then check them on the holdout. `BacktestEngine.run(..., start_date=..., end_date=...)` also restricts the trading window while still using earlier data for warm-up, for testing on a different period.
 
 ## Project layout
 

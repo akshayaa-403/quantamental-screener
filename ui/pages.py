@@ -17,13 +17,19 @@ README_BACKTEST_URL = (
 )
 FACTOR_HELP = {
     "momentum": "12-minus-1 month return, z-scored across today's universe and clipped at ±3.",
-    "volume": "Volume ÷ its 20-day average, signed by the day's return; z-scored.",
-    "volatility": "Negative 20-day annualized volatility, z-scored: higher means a calmer stock.",
+    "volume": "10-day average of (volume ÷ 20-day average volume) × sign of the day's return: sustained "
+              "buying vs selling pressure; z-scored.",
+    "volatility": "Negative 60-day annualized volatility, z-scored: higher means a calmer stock.",
 }
 SENTIMENT_HELP_LIVE = (
-    "News sentiment z-score. Blank = no sentiment: live news is fetched only for the "
-    f"{stages.LIVE_SENTIMENT_LIMIT} largest names, and some of those return no headlines. "
-    "Blank names get a sentiment z-score of 0 in the composite, i.e. the average of the names with news."
+    "News sentiment z-score from the last week's headlines naming the company, shrunk toward neutral when "
+    "there are few headlines. Blank = no recent headlines; those names get a sentiment z-score of 0 in the "
+    "composite, i.e. the average."
+)
+PIT_RANK_HELP = (
+    "Rank on momentum, volume and volatility only, with your weights: the part of today's ranking the "
+    "backtest actually tested. A big gap from Rank means sentiment, which the backtest can't test, is "
+    "driving that name's position."
 )
 SENTIMENT_HELP_MOCK = "Seeded mock sentiment z-score (demo mode, not real news)."
 
@@ -83,8 +89,9 @@ def kpi(col, label, value, note=None, delta=None, help=None):
 def caveat_line(bt) -> str:
     return (
         f"Backtest {fmt_date(bt['start_date'])} → {fmt_date(bt['end_date'])}, {bt['n_rebalances']} rebalance dates, "
-        "signals traded at the next close. It runs **without sentiment** (no point-in-time news), the universe "
-        "has **survivorship bias**, and the p-value is **gross of costs**."
+        "signals traded at the next close. It runs **without sentiment** (no point-in-time news), so it tests "
+        "the *Price-only rank*, not today's full ranking. The universe has **survivorship bias**, which the "
+        "equal-weight universe line shares; the p-value is **gross of costs**."
     )
 
 
@@ -104,7 +111,8 @@ def render_empty_state():
         (":material/functions:", "Score four factors",
          "Momentum, volume, low volatility and news sentiment, z-scored each day and blended with your weights."),
         (":material/monitoring:", "Backtest the ranking",
-         "Hold the top names, rebalance weekly, pay costs, and compare with SPY, plus a test for luck."),
+         "Hold the top names, rebalance weekly, pay costs, and compare with the universe and SPY, plus a test "
+         "for luck."),
     ]
     for col, (icon, title, body) in zip(st.columns(3), steps):
         with col.container(border=True):
@@ -141,22 +149,25 @@ def render_overview():
     else:
         kpi(cols[1], "Top pick", "n/a", note="No stock has a composite yet")
     if bt:
-        kpi(cols[2], "Strategy vs SPY", fmt_return(bt["excess_return"]),
-            note=f"Strategy {fmt_return(bt['strategy_return'])} · SPY {fmt_return(bt['benchmark_return'])}",
-            help="Excess return: the strategy's total return after costs minus SPY's, over the backtest window "
-                 "(simple difference, not annualized).")
         verdict, color = p_value_reading(bt["p_value"])
-        kpi(cols[3], "Significance (p-value)", fmt_p(bt["p_value"]),
+        kpi(cols[2], "Significance (p-value)", fmt_p(bt["p_value"]),
             note=f":{color}-badge[{verdict}] gross of costs",
             help="Roughly the share of random portfolios from the same eligible names that did at least as "
-                 "well as the strategy's picks. See Backtest for how to read it.")
+                 "well as the strategy's picks. The most honest number here: it compares like with like, so "
+                 "the universe's biases cancel out. See Backtest for how to read it.")
+        kpi(cols[3], "Strategy vs universe", fmt_return(bt["excess_vs_universe"]),
+            note=f"Strategy {fmt_return(bt['strategy_return'])} · Universe EW "
+                 f"{fmt_return(bt['universe_return'])} · SPY {fmt_return(bt['benchmark_return'])}",
+            help="The strategy's total return after costs minus an equal-weight portfolio of every eligible "
+                 "name (gross of costs), over the backtest window. Beating SPY says little: today's largest "
+                 "companies are, by construction, past winners.")
     else:
-        kpi(cols[2], "Strategy vs SPY", "n/a", note="See the note below")
-        kpi(cols[3], "Significance (p-value)", "n/a", note="See the note below")
+        kpi(cols[2], "Significance (p-value)", "n/a", note="See the note below")
+        kpi(cols[3], "Strategy vs universe", "n/a", note="See the note below")
 
     with st.container(border=True):
         head, link = st.columns([3, 1], vertical_alignment="center")
-        head.markdown("**Strategy vs SPY** · growth of 100")
+        head.markdown("**Strategy vs universe and SPY** · growth of 100")
         if link.button("Full backtest", icon=":material/arrow_forward:", type="tertiary", key="ov_backtest"):
             open_page(PAGE_BACKTEST)
         if bt:
@@ -198,6 +209,7 @@ def rankings_table(results, ranked: pd.DataFrame) -> pd.DataFrame:
     with_sentiment = tickers_with_sentiment(results)
     table = pd.DataFrame({
         "Rank": range(1, len(ranked) + 1),
+        "Price-only rank": ranked["composite_pit"].rank(ascending=False, method="min").to_numpy(),
         "Ticker": ranked.index.astype(str),
         "Composite": ranked["composite"].to_numpy(),
     })
@@ -237,6 +249,8 @@ def render_rankings():
     mock = results["params"]["use_mock"]
     column_config = {
         "Rank": st.column_config.NumberColumn("Rank", format="%d", width="small"),
+        "Price-only rank": st.column_config.NumberColumn("Price-only rank", format="%d", width="small",
+                                                         help=PIT_RANK_HELP),
         "Ticker": st.column_config.TextColumn("Ticker", width="small"),
         "Composite": st.column_config.ProgressColumn(
             "Composite", format="%+.2f", min_value=cmin, max_value=cmax,
@@ -310,14 +324,21 @@ def render_backtest():
     cols = st.columns(4)
     kpi(cols[0], "Strategy return", fmt_return(bt["strategy_return"]),
         help=f"Total return on {md_usd(bt['initial_capital'])} of starting capital, after transaction costs.")
-    kpi(cols[1], "SPY return", fmt_return(bt["benchmark_return"]),
-        help="Total return of SPY (dividend-adjusted) over the same dates.")
-    kpi(cols[2], "Excess return", fmt_return(bt["excess_return"]),
-        help="Strategy return minus SPY return over the window (simple difference, not annualized).")
+    kpi(cols[1], "vs equal-weight universe", fmt_return(bt["excess_vs_universe"]),
+        note=f"Universe {fmt_return(bt['universe_return'])}",
+        help="Strategy return minus an equal-weight portfolio of every eligible name, rebalanced on the same "
+             "dates (gross of costs). This is the fair yardstick: it shares the universe's survivorship and "
+             "size biases, so the difference isolates the stock selection.")
+    kpi(cols[2], "vs SPY", fmt_return(bt["excess_return"]),
+        note=f"SPY {fmt_return(bt['benchmark_return'])}",
+        help="Strategy return minus SPY (dividend-adjusted), simple difference, not annualized. Flattered by "
+             "the universe: today's largest companies are past winners.")
     sharpe = bt["sharpe_ratio"]
     kpi(cols[3], "Sharpe ratio", "n/a" if pd.isna(sharpe) else f"{sharpe:.2f}",
-        help=f"Annualized: mean daily return minus the risk-free rate ({cfg.risk_free_rate:.1%} a year), "
-             "divided by the standard deviation of daily returns, times √252.")
+        note=f"Risk-free {bt['risk_free_rate']:.2%} ({bt['risk_free_source']})",
+        help="Annualized: mean of (daily return − daily risk-free return) divided by its standard deviation, "
+             "times √252. The risk-free rate is the 13-week T-bill yield on each day unless "
+             "BACKTEST_RISK_FREE_RATE fixes it.")
 
     with st.container(border=True, key="secondary_stats"):
         stats = [
@@ -350,13 +371,31 @@ def render_backtest():
         st.caption("Reading: below 0.05 unlikely to be luck · 0.05 to 0.20 weak evidence · "
                    "above 0.20 indistinguishable from luck.")
 
+    hold = bt.get("holdout") or {}
+    if hold:
+        h_verdict, h_color = p_value_reading(hold["p_value"])
+        with st.container(border=True):
+            st.markdown(f"**:material/lock: Holdout: last {cfg.holdout_fraction:.0%} of the window** "
+                        f"({fmt_date(hold['start_date'])} → {fmt_date(bt['end_date'])}, "
+                        f"{hold['n_rebalances']} rebalances) &nbsp; :{h_color}-badge[{h_verdict}]")
+            h_cols = st.columns(4)
+            h_cols[0].metric("Strategy", fmt_return(hold["strategy_return"]))
+            h_cols[1].metric("Universe EW", fmt_return(hold["universe_return"]))
+            h_cols[2].metric("SPY", fmt_return(hold["benchmark_return"]))
+            h_cols[3].metric("p-value", fmt_p(hold["p_value"]))
+            st.caption(
+                "If you tune the weights, judge them on the earlier part of the window and only then look here. "
+                "Weights that hold up in the holdout are less likely to be overfit. Once you start tuning "
+                "against the holdout too, it stops being out-of-sample."
+            )
+
     st.markdown("#### Equity curve and drawdown")
     with st.container(border=True):
         show_chart(equity_figure(bt, drawdown=True, height=460), key="bt_equity")
         st.caption(
             f"{fmt_date(bt['start_date'])} → {fmt_date(bt['end_date'])} · {bt['n_rebalances']} rebalance dates "
             f"(every {cfg.rebalance_freq} trading days, including the first purchase) · top {cfg.top_n_stocks} "
-            "names, equal weight at purchase (held names then drift; only names that change are traded) · "
+            "names, reset to equal weight at every rebalance · "
             f"signals traded at the next close · final value {md_usd(bt['final_value'])} from "
             f"{md_usd(bt['initial_capital'])}."
         )
@@ -370,9 +409,12 @@ def how_to_read(bt, cfg):
         st.markdown("**:material/info: How to read this**")
         st.markdown(
             "- **No sentiment in the backtest.** There is no point-in-time news history, so the backtest ranks on "
-            "momentum, volume and volatility only (sentiment weight set to 0). Today's ranking does use sentiment.\n"
-            "- **Survivorship bias.** The universe is today's S&P 500, ranked by today's market cap, so the backtest "
-            "can never pick a company that has since left the index. This flatters the results.\n"
+            "momentum, volume and volatility only. Today's ranking does use sentiment; the **Price-only rank** "
+            "column on Rankings shows the ranking the backtest tested.\n"
+            "- **Survivorship and size bias.** The universe is today's S&P 500, ranked by today's market cap, so "
+            "every name is a company that grew large, and none has since left the index. Any portfolio of them "
+            "tends to beat SPY in hindsight. Compare with the **equal-weight universe**, which shares these "
+            "biases, and trust the p-value over the gap to SPY.\n"
             "- **Traded at the next close.** Scores use data up to the close of day t; the portfolio trades on them "
             "at the close of day t+1.\n"
             f"- **Costs.** Returns include {cfg.transaction_cost_bps:g} bps per trade; the p-value is gross of "
@@ -382,9 +424,9 @@ def how_to_read(bt, cfg):
         with st.expander("More on the method and its limits"):
             st.markdown(
                 "Factors need history before they can score (momentum needs about 13 months), so about 400 extra "
-                "calendar days are downloaded before the window. Only names that enter or leave the top N are "
-                "traded. If you tune weights here, check them on a different period too: tuning and testing on "
-                "the same window overfits.\n\n"
+                "calendar days are downloaded before the window. Each rebalance resets the portfolio to equal "
+                "weights, paying costs on every trade that takes. If you tune weights here, check them on the "
+                "holdout or a different period: tuning and testing on the same window overfits.\n\n"
                 f"Full write-up: [How the backtest works (and what it can't tell you)]({README_BACKTEST_URL})."
             )
 
@@ -450,10 +492,16 @@ def stock_detail_body():
         entry = entry if isinstance(entry, dict) else {"score": entry}
         s_cols = st.columns(3)
         s_cols[0].metric("Score", fmt_z(entry.get("score")) if has_sentiment else "n/a",
-                         help="Raw headline sentiment from -1 (negative) to +1 (positive).")
-        s_cols[1].metric("Confidence", f"{entry['confidence']:.2f}" if "confidence" in entry else "n/a",
-                         help="Agreement between headlines, 0 to 1 (1 minus the spread of headline scores). "
-                              "Not a probability; fixed at 0.66 when there is only one headline.")
+                         help="Headline sentiment from -1 (negative) to +1 (positive), shrunk toward 0 by "
+                              f"n / (n + {get_settings().sentiment.prior_headlines:g}) for n headlines, so a "
+                              "single headline can't give an extreme score.")
+        if "n_headlines" in entry:
+            s_cols[1].metric("Headlines", f"{entry['n_headlines']}",
+                             help=f"Headlines scored. Unshrunk score: {fmt_z(entry.get('raw_score'))}.")
+        else:
+            s_cols[1].metric("Confidence", f"{entry['confidence']:.2f}" if "confidence" in entry else "n/a",
+                             help="Agreement between headlines, 0 to 1 (1 minus the spread of headline "
+                                  "scores). Not a probability.")
         s_cols[2].metric("Source", source)
         if source == "mock":
             st.caption("Mock sentiment is seeded random data for the demo, unrelated to the headlines below.")
@@ -467,8 +515,10 @@ def stock_detail_body():
             items = None
         if items:
             st.markdown("\n".join("- " + h.replace("$", "\\$") for h in items))
-            st.caption("Up to 5 headlines: NewsAPI's most relevant matches for the symbol if a key is set "
-                       "(no date filter), otherwise Yahoo Finance's latest.")
+            news_cfg = get_settings().sentiment
+            st.caption(f"Up to {news_cfg.max_headlines} headlines from the last {news_cfg.lookback_days} days: "
+                       "NewsAPI matches for the company name in the title if a key is set, otherwise Yahoo "
+                       "Finance's news for the ticker.")
         else:
             st.caption("No recent headlines found." if items is not None else "Couldn't load headlines right now.")
 

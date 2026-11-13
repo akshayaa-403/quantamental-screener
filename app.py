@@ -72,18 +72,22 @@ def cli(top_n):
             for t in tickers_in_data
         }
     else:
-        # Real sentiment for the live ranking only (first 20 names, to stay
-        # inside news API rate limits). Names without news are left out and
-        # scored as neutral by SentimentFactor.
+        # Real sentiment for the live ranking only, for every name in the
+        # universe (searched by company name). Names without recent headlines
+        # are left out and scored as neutral by SentimentFactor.
         news_by_ticker = {}
-        for t in tickers[:20]:
+        cfg = settings.sentiment
+        for t in tickers:
             try:
-                headlines = data_source.get_news_headlines(t)
+                headlines = data_source.get_news_headlines(
+                    t, lookback_days=cfg.lookback_days, company_name=universe.company_names.get(t),
+                    max_headlines=cfg.max_headlines)
                 if headlines:
                     news_by_ticker[t] = headlines
             except Exception as e:
                 logger.warning(f"Could not fetch news for {t}: {e}")
         sentiment_scores = sentiment_model.batch_analyze(news_by_ticker)
+        logger.info(f"Sentiment coverage: {len(sentiment_scores)}/{len(tickers)} tickers")
         if not sentiment_scores:
             logger.warning("No real sentiment scores available; sentiment factor will contribute neutral scores.")
 
@@ -96,7 +100,7 @@ def cli(top_n):
         return
 
     # Compute current scores for display (latest date)
-    scores_df = scorer.compute(price_data, sentiment_scores, cross_sectional_normalize=True)
+    scores_df = scorer.compute(price_data, sentiment_scores)
     if scores_df.empty:
         logger.error("No scores computed.")
         return

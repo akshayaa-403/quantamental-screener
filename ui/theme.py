@@ -121,7 +121,7 @@ def naive_index(index: pd.Index) -> pd.Index:
 
 
 def equity_figure(bt: dict, drawdown: bool, height: int):
-    """Strategy vs SPY, start = 100, optionally with an underwater chart below."""
+    """Strategy vs the equal-weight universe and SPY, start = 100, optionally with an underwater chart below."""
     port, bench = bt["portfolio_series"], bt["benchmark_series"]
     # Normalize off the TRUE starting capital so the curve's endpoint matches
     # the reported Strategy/SPY return metrics exactly.
@@ -132,6 +132,12 @@ def equity_figure(bt: dict, drawdown: bool, height: int):
                         row_heights=[0.68, 0.32] if drawdown else None)
     fig.add_trace(go.Scatter(x=strat.index, y=strat, name="Strategy", line=dict(color=ACCENT, width=2),
                              hovertemplate="%{y:.2f}<extra>Strategy</extra>"), row=1, col=1)
+    universe = bt.get("universe_series")
+    if universe is not None:
+        uni = universe / base * 100
+        fig.add_trace(go.Scatter(x=uni.index, y=uni, name="Universe (equal weight)",
+                                 line=dict(color=BENCHMARK, width=1.6, dash="dash"),
+                                 hovertemplate="%{y:.2f}<extra>Universe EW</extra>"), row=1, col=1)
     fig.add_trace(go.Scatter(x=spy.index, y=spy, name="SPY", line=dict(color=BENCHMARK, width=1.6),
                              hovertemplate="%{y:.2f}<extra>SPY</extra>"), row=1, col=1)
     fig.add_hline(y=100, line_dash="dot", line_color=BENCHMARK, opacity=0.6, row=1, col=1)

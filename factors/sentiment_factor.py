@@ -9,6 +9,8 @@ class SentimentFactor(Factor):
     name = "sentiment"
     # Missing sentiment is treated as neutral, not as a reason to drop a row.
     required = False
+    # Today's headlines say nothing about past dates: never backtest this.
+    point_in_time = False
     
     def compute(self, data: pd.DataFrame, **kwargs) -> pd.Series:
         """
