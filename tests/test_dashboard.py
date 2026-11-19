@@ -90,8 +90,9 @@ def test_every_page_renders_after_run(app):
     assert not at.exception, at.exception
     assert len(at.dataframe) == 1
     assert "Price-only rank" in at.dataframe[0].value.columns
-    # Backtest (a plain rerun returns AppTest to the default page first)
-    at.run().button(key="ov_backtest").click().run()
+    # Backtest, from a fresh session's Overview (Streamlit >=1.67 keeps the current page across reruns)
+    at = run_screener(AppTest.from_file(APP, default_timeout=120))
+    at.button(key="ov_backtest").click().run()
     assert not at.exception, at.exception
     labels = {m.label for m in at.metric}
     assert {"Strategy return", "vs equal-weight universe", "vs SPY", "Sharpe ratio", "Max drawdown",
@@ -99,7 +100,8 @@ def test_every_page_renders_after_run(app):
     assert "Holdout" in texts(at)
     assert "survivorship and size bias" in texts(at).lower()
     # Stock detail, opened from a top-pick card
-    top = at.run().metric[1].value
+    at = run_screener(AppTest.from_file(APP, default_timeout=120))
+    top = at.metric[1].value
     at.button(key=f"ov_open_{top}").click().run()
     assert not at.exception, at.exception
     assert at.session_state["selected_ticker"] == top
