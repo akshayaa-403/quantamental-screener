@@ -78,6 +78,23 @@ class TestHeadlines:
         assert [(a["url"], a["tag"]) for a in articles] == [("https://www.reuters.com/a", "Reuters"),
                                                               ("https://www.wsj.com/b", "WSJ")]
 
+    def test_empty_news_is_cached_briefly(self, monkeypatch):
+        source = self._source(monkeypatch, [])
+        source._cache = Mock(get=Mock(return_value=None))
+        assert source.get_news_articles("AAPL") == []
+        assert source._cache.set.call_args.kwargs["ttl"] == 300
+
+    def test_get_news_for_skips_names_without_news_or_with_errors(self, monkeypatch):
+        source = YahooFinanceSource()
+        news = {"AAPL": ["Apple beats"], "MSFT": []}
+
+        def headlines(ticker, *args):
+            if ticker == "BAD":
+                raise RuntimeError("boom")
+            return news[ticker]
+        monkeypatch.setattr(source, "get_news_headlines", headlines)
+        assert source.get_news_for(["AAPL", "MSFT", "BAD"], {}, 7, 10) == {"AAPL": ["Apple beats"]}
+
     def test_source_tag(self):
         assert yahoo_finance.source_tag("The New York Times") == "NYT"
         assert yahoo_finance.source_tag(None, "https://www.nytimes.com/x") == "NYT"

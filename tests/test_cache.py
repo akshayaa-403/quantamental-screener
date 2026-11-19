@@ -70,3 +70,14 @@ def test_clear_removes_everything(fake_cache):
 
     assert fake_cache.get("a") is None
     assert fake_cache.get("b") is None
+
+
+def test_redis_outage_is_a_cache_miss(fake_cache, monkeypatch):
+    import redis
+
+    def down(*args, **kwargs):
+        raise redis.ConnectionError("gone")
+    monkeypatch.setattr(fake_cache.client, "get", down)
+    monkeypatch.setattr(fake_cache.client, "set", down)
+    assert fake_cache.get("k") is None
+    assert fake_cache.set("k", "v") is False

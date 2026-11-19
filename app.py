@@ -75,17 +75,9 @@ def cli(top_n):
         # Real sentiment for the live ranking only, for every name in the
         # universe (searched by company name). Names without recent headlines
         # are left out and scored as neutral by SentimentFactor.
-        news_by_ticker = {}
         cfg = settings.sentiment
-        for t in tickers:
-            try:
-                headlines = data_source.get_news_headlines(
-                    t, lookback_days=cfg.lookback_days, company_name=universe.company_names.get(t),
-                    max_headlines=cfg.max_headlines)
-                if headlines:
-                    news_by_ticker[t] = headlines
-            except Exception as e:
-                logger.warning(f"Could not fetch news for {t}: {e}")
+        news_by_ticker = data_source.get_news_for(tickers, universe.company_names, cfg.lookback_days,
+                                                  cfg.max_headlines)
         sentiment_scores = sentiment_model.batch_analyze(news_by_ticker)
         logger.info(f"Sentiment coverage: {len(sentiment_scores)}/{len(tickers)} tickers")
         if not sentiment_scores:

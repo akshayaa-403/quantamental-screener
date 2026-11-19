@@ -5,7 +5,6 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 import requests
 
 def setup_logging(level=logging.INFO):
-    # (existing code unchanged)
     env_level = os.getenv('LOG_LEVEL', '').upper()
     if env_level in ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']:
         level = getattr(logging, env_level)
@@ -26,7 +25,6 @@ def setup_logging(level=logging.INFO):
     logging.getLogger('urllib3').setLevel(logging.WARNING)
     logging.getLogger('requests').setLevel(logging.WARNING)
     logging.getLogger('yfinance').setLevel(logging.WARNING)
-    logging.getLogger('matplotlib').setLevel(logging.WARNING)
     logging.getLogger('factors').setLevel(logging.DEBUG if level <= logging.DEBUG else logging.INFO)
     logging.info(f"Logging configured with level {logging.getLevelName(level)}")
 

@@ -10,3 +10,4 @@ __pycache__/
 .dockerignore
 Dockerfile
 README.md
+.streamlit/secrets.toml

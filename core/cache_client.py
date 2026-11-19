@@ -52,7 +52,11 @@ class CacheClient:
     def get(self, key: str) -> Optional[Any]:
         if not self.enabled:
             return None
-        data = self.client.get(key)
+        try:
+            data = self.client.get(key)
+        except redis.RedisError as e:  # Redis went away after start-up: a miss, not a crash
+            logger.warning(f"Cache read failed for {key}: {e}")
+            return None
         if data is None:
             return None
         try:
@@ -69,7 +73,11 @@ class CacheClient:
         except (TypeError, ValueError) as e:
             logger.warning(f"Not caching {key}: {e}")
             return False
-        self.client.set(key, payload, ex=ttl or self.default_ttl)
+        try:
+            self.client.set(key, payload, ex=ttl or self.default_ttl)
+        except redis.RedisError as e:
+            logger.warning(f"Cache write failed for {key}: {e}")
+            return False
         return True
 
     def clear(self):

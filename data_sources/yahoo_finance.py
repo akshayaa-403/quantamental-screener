@@ -1,3 +1,5 @@
+from concurrent.futures import ThreadPoolExecutor
+
 import yfinance as yf
 from newsapi import NewsApiClient
 import os
@@ -8,7 +10,6 @@ import re
 from core.cache_mixin import CacheMixin
 from tqdm import tqdm
 import logging
-import requests
 from utils.logging_utils import retry_on_network_error
 
 logger = logging.getLogger(__name__)
@@ -17,7 +18,6 @@ class YahooFinanceSource(CacheMixin):
     def __init__(self):
         CacheMixin.__init__(self)
 
-    @retry_on_network_error
     def get_price_data(self, tickers: List[str], start: str, end: str) -> pd.DataFrame:
         """
         Fetch daily OHLCV from Yahoo Finance, indexed by (Ticker, Date).
@@ -28,7 +28,7 @@ class YahooFinanceSource(CacheMixin):
 
         for ticker in tqdm(tickers, desc="Downloading price data"):
             try:
-                df = yf.Ticker(ticker).history(start=start, end=end, auto_adjust=True)
+                df = _history(ticker, start, end)
                 if df.empty:
                     logger.warning(f"No data for {ticker}")
                     continue
@@ -37,11 +37,7 @@ class YahooFinanceSource(CacheMixin):
                 df['Ticker'] = ticker
                 all_dfs.append(df[['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'Ticker']])
 
-            except Exception as e:
-                # Network errors restart the whole download via the retry
-                # decorator; anything else skips this ticker.
-                if isinstance(e, (requests.RequestException, ConnectionError, TimeoutError)):
-                    raise
+            except Exception as e:  # noqa: BLE001 - network errors were already retried; skip this ticker
                 logger.error(f"Failed to download {ticker}: {e}", exc_info=True)
 
         if not all_dfs:
@@ -61,7 +57,6 @@ class YahooFinanceSource(CacheMixin):
         """Titles of :meth:`get_news_articles` (what the sentiment model scores)."""
         return [a['title'] for a in self.get_news_articles(ticker, lookback_days, company_name, max_headlines)]
 
-    @retry_on_network_error
     def get_news_articles(self, ticker: str, lookback_days: int = 7, company_name: Optional[str] = None,
                           max_headlines: int = 10) -> List[Dict[str, Optional[str]]]:
         """
@@ -113,9 +108,23 @@ class YahooFinanceSource(CacheMixin):
             except Exception as e:
                 logger.warning(f"yfinance news fallback failed for {ticker}: {e}")
 
-        # Cache even if empty to avoid repeated failed requests
-        self._cache.set(cache_key, articles, ttl=3600)
+        # Empty may be an outage rather than no news: cache it briefly so it heals.
+        self._cache.set(cache_key, articles, ttl=3600 if articles else 300)
         return articles
+
+    def get_news_for(self, tickers, company_names: Dict[str, str], lookback_days: int,
+                     max_headlines: int, workers: int = 8) -> Dict[str, List[str]]:
+        """Ticker -> recent headlines, fetched in parallel; names without news (or whose fetch failed) are left out."""
+        def one(ticker):
+            try:
+                return ticker, self.get_news_headlines(ticker, lookback_days, company_names.get(ticker),
+                                                       max_headlines)
+            except Exception as e:  # noqa: BLE001 - one name's news failing shouldn't stop the run
+                logger.warning(f"Could not fetch news for {ticker}: {e}")
+                return ticker, []
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            return {t: h for t, h in pool.map(one, tickers) if h}
 
 
 # Short labels for well-known outlets, matched against the lowercased publisher
@@ -165,12 +174,17 @@ def _article(title, url, source) -> Dict[str, Optional[str]]:
     source = (source or "").strip() or None
     return {'title': title, 'url': url, 'source': source, 'tag': source_tag(source, url)}
 
-
 _NAME_SUFFIX = re.compile(
     r"(\s*\([^)]*\)|,?\s+(inc|incorporated|corp|corporation|co|company|plc|ltd|limited|holdings?|group|"
     r"n\.?v|s\.?a)\.?)$",
     re.IGNORECASE,
 )
+
+
+@retry_on_network_error
+def _history(ticker: str, start: str, end: str) -> pd.DataFrame:
+    """One ticker's adjusted daily bars; network errors retry this ticker only."""
+    return yf.Ticker(ticker).history(start=start, end=end, auto_adjust=True)
 
 
 def _news_query(ticker: str, company_name: Optional[str]) -> Optional[str]:

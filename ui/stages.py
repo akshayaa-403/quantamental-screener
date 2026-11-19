@@ -5,8 +5,6 @@ the UI can report progress per stage. Cache keys come only from hashable
 arguments (strings, numbers, tuples, DataFrames, dicts), never from the
 heavy components, which come from ``load_components``.
 """
-from concurrent.futures import ThreadPoolExecutor
-
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -45,7 +43,7 @@ def load_components():
     return data_source, sentiment_model, factors
 
 
-@st.cache_data(ttl=TTL, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)  # ~500 Yahoo lookups; the S&P 500 barely moves in a day
 def select_universe(universe_size: int) -> list:
     tickers = UniverseSelector({"size": universe_size}).select()
     if not tickers:
@@ -80,27 +78,13 @@ def company_names() -> dict:
     return selector.company_names
 
 
-def fetch_news(data_source, tickers, names: dict) -> dict:
-    """Ticker -> recent headlines, fetched in parallel; failures count as no news."""
-    cfg = get_settings().sentiment
-
-    def one(ticker):
-        try:
-            return ticker, data_source.get_news_headlines(
-                ticker, lookback_days=cfg.lookback_days, company_name=names.get(ticker),
-                max_headlines=cfg.max_headlines)
-        except Exception:  # noqa: BLE001 - one name's news failing shouldn't stop the run
-            return ticker, []
-
-    with ThreadPoolExecutor(max_workers=NEWS_WORKERS) as pool:
-        return {t: h for t, h in pool.map(one, tickers) if h}
-
-
 @st.cache_data(ttl=TTL, show_spinner=False)
 def live_sentiment(tickers: tuple) -> dict:
     """News sentiment for every ticker; names without headlines are left out (scored neutral)."""
     data_source, sentiment_model, _ = load_components()
-    news_by_ticker = fetch_news(data_source, tickers, company_names())
+    cfg = get_settings().sentiment
+    news_by_ticker = data_source.get_news_for(tickers, company_names(), cfg.lookback_days, cfg.max_headlines,
+                                              workers=NEWS_WORKERS)
     if not news_by_ticker:
         raise NoHeadlines()
     return sentiment_model.batch_analyze(news_by_ticker)
