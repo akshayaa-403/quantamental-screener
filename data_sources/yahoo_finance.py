@@ -215,8 +215,10 @@ def _dedupe(articles) -> List[Dict[str, Optional[str]]]:
 def _yahoo_item(item: dict):
     """(article dict, publish time as a UTC Timestamp or None) for old and new yfinance news formats."""
     content = item.get('content') if isinstance(item.get('content'), dict) else item
-    url = ((content.get('canonicalUrl') or {}).get('url') or (content.get('clickThroughUrl') or {}).get('url')
-           or content.get('link') or item.get('link'))
+    urls = [u for u in ((content.get('canonicalUrl') or {}).get('url'), (content.get('clickThroughUrl') or {}).get('url'),
+                        content.get('link'), item.get('link')) if u]
+    # Prefer the outlet's own page over Yahoo's syndicated copy of the story.
+    url = next((u for u in urls if 'yahoo.com' not in urlparse(u).netloc), urls[0] if urls else None)
     source = (content.get('provider') or {}).get('displayName') or content.get('publisher') or item.get('publisher')
     article = _article(content.get('title'), url, source)
     published = None

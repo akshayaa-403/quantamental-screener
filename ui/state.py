@@ -6,6 +6,12 @@ import streamlit as st
 from config.settings import get_settings
 
 FACTOR_COLS = ("momentum", "sentiment", "volume", "volatility")
+FACTOR_MEANING = {
+    "momentum": "How much the stock rose over the past year, skipping the latest month.",
+    "sentiment": "How positive or negative the last week's news headlines about the company are.",
+    "volume": "Whether heavy trading days lately came with rising or falling prices (buying vs selling pressure).",
+    "volatility": "How calm the stock's daily price swings were over the last 3 months; calmer scores higher.",
+}
 PERIOD_DAYS = {"6M": 182, "1Y": 365, "2Y": 730, "3Y": 1095}
 PERIOD_OPTIONS = [*PERIOD_DAYS, "Custom"]
 DEFAULT_PERIOD = "1Y"

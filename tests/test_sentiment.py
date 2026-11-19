@@ -78,6 +78,14 @@ class TestHeadlines:
         assert [(a["url"], a["tag"]) for a in articles] == [("https://www.reuters.com/a", "Reuters"),
                                                               ("https://www.wsj.com/b", "WSJ")]
 
+    def test_yahoo_link_prefers_the_outlets_own_page(self, monkeypatch):
+        now = pd.Timestamp.now(tz="UTC")
+        news = [{"content": {"title": "T", "pubDate": now.isoformat(), "provider": {"displayName": "Reuters"},
+                             "canonicalUrl": {"url": "https://finance.yahoo.com/news/t.html"},
+                             "clickThroughUrl": {"url": "https://www.reuters.com/t"}}}]
+        [article] = self._source(monkeypatch, news).get_news_articles("AAPL")
+        assert article["url"] == "https://www.reuters.com/t"
+
     def test_empty_news_is_cached_briefly(self, monkeypatch):
         source = self._source(monkeypatch, [])
         source._cache = Mock(get=Mock(return_value=None))

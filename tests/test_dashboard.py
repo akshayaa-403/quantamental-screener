@@ -45,7 +45,9 @@ def app(price_data, monkeypatch):
     monkeypatch.setattr(stages, "download_prices", lambda tickers, start, end: prices)
     monkeypatch.setattr(stages, "live_sentiment", lambda tickers: {
         t: {"score": 0.4, "confidence": 0.7, "model": "ensemble"} for t in tickers if t in WITH_NEWS})
-    monkeypatch.setattr(stages, "headlines", lambda ticker: [f"{ticker} beats $estimates", "Second headline"])
+    monkeypatch.setattr(stages, "headlines", lambda ticker: [
+        {"title": f"{ticker} beats $estimates", "url": "https://www.wsj.com/a", "tag": "WSJ"},
+        {"title": "Second headline", "url": None, "tag": None}])
     monkeypatch.setattr(BacktestEngine, "_fetch_benchmark", benchmark)
     monkeypatch.setattr(BacktestEngine, "_fetch_risk_free",
                         lambda self, start_date, end_date: pd.Series(0.04, index=pd.bdate_range(start_date, end_date)))
@@ -66,6 +68,7 @@ def texts(at):
 def test_empty_state_before_run(app):
     app.run()
     assert not app.exception
+    assert all(app.sidebar.slider(key=f"w_{f}").help for f in ("momentum", "sentiment", "volume", "volatility"))
     assert app.button(key="demo_run").label.startswith("Run demo")
     assert "Not run yet" in texts(app)
     assert len(app.dataframe) == 0
@@ -106,6 +109,7 @@ def test_every_page_renders_after_run(app):
     assert not at.exception, at.exception
     assert at.session_state["selected_ticker"] == top
     assert at.selectbox(key="detail_ticker").value == top
+    assert any(rf"- [{top} beats \$estimates](https://www.wsj.com/a) :gray-badge[WSJ]" in m.value for m in at.markdown)
 
 
 def test_unfetched_sentiment_is_blank_not_zero(app):

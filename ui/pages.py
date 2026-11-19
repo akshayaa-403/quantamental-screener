@@ -60,15 +60,15 @@ def _md_escape(text: str) -> str:
 
 
 def headline_markdown(item) -> str:
-    """One bullet: outlet badge, then the headline linked to the article when there is a URL."""
+    """One bullet: the headline linked to the article when there is a URL, then an inline outlet chip."""
     if isinstance(item, str):
         item = {"title": item}
     title = _md_escape(item.get("title") or "")
     url = item.get("url")
     line = f"[{title}]({url.replace(')', '%29').replace(' ', '%20')})" if url else title
     tag = item.get("tag")
-    badge = f":gray-badge[{_md_escape(tag)}] " if tag else ""
-    return f"- {badge}{line}"
+    chip = f" :gray-badge[{_md_escape(tag)}]" if tag else ""
+    return f"- {line}{chip}"
 
 
 def sentiment_source(results, ticker) -> str:

@@ -15,7 +15,7 @@ st.set_page_config(
 )
 
 from ui import pages, stages, state  # noqa: E402 - after set_page_config
-from ui.state import FACTOR_COLS, PERIOD_OPTIONS  # noqa: E402
+from ui.state import FACTOR_COLS, FACTOR_MEANING, PERIOD_OPTIONS  # noqa: E402
 from ui.theme import fmt_date, weights_bar_html  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
@@ -136,7 +136,7 @@ def render_sidebar():
         st.markdown("**Factor weights**")
         c1, c2 = st.columns(2)
         for col, factor in zip((c1, c1, c2, c2), FACTOR_COLS):  # stacks in factor order on phones
-            col.slider(factor.capitalize(), 0.0, 1.0, step=0.05, key=f"w_{factor}")
+            col.slider(factor.capitalize(), 0.0, 1.0, step=0.05, key=f"w_{factor}", help=FACTOR_MEANING[factor])
         weights, fallback = state.normalized_weights()
         st.markdown(weights_bar_html(weights), unsafe_allow_html=True)
         if fallback:
