@@ -1,4 +1,6 @@
 """Page renderers: Overview, Rankings, Backtest and Stock detail."""
+import re
+
 import pandas as pd
 import streamlit as st
 
@@ -51,6 +53,22 @@ def tickers_with_sentiment(results) -> set:
         v = v.get("score") if isinstance(v, dict) else v
         return isinstance(v, (int, float)) and not isinstance(v, bool) and not pd.isna(v)
     return {t for t, v in results["sentiment"].items() if numeric(v)}
+
+
+def _md_escape(text: str) -> str:
+    return re.sub(r"([\\$\[\]*_`])", r"\\\1", text)
+
+
+def headline_markdown(item) -> str:
+    """One bullet: outlet badge, then the headline linked to the article when there is a URL."""
+    if isinstance(item, str):
+        item = {"title": item}
+    title = _md_escape(item.get("title") or "")
+    url = item.get("url")
+    line = f"[{title}]({url.replace(')', '%29').replace(' ', '%20')})" if url else title
+    tag = item.get("tag")
+    badge = f":gray-badge[{_md_escape(tag)}] " if tag else ""
+    return f"- {badge}{line}"
 
 
 def sentiment_source(results, ticker) -> str:
@@ -514,7 +532,7 @@ def stock_detail_body():
         except Exception:  # noqa: BLE001 - headlines are optional context
             items = None
         if items:
-            st.markdown("\n".join("- " + h.replace("$", "\\$") for h in items))
+            st.markdown("\n".join(headline_markdown(h) for h in items))
             news_cfg = get_settings().sentiment
             st.caption(f"Up to {news_cfg.max_headlines} headlines from the last {news_cfg.lookback_days} days: "
                        "NewsAPI matches for the company name in the title if a key is set, otherwise Yahoo "

@@ -124,8 +124,9 @@ def backtest(price_data: pd.DataFrame, weights: tuple, start_date: str) -> dict:
 
 @st.cache_data(ttl=600, show_spinner=False)
 def headlines(ticker: str) -> list:
+    """Recent articles as {'title', 'url', 'source', 'tag'} dicts."""
     data_source, _, _ = load_components()
     cfg = get_settings().sentiment
-    return data_source.get_news_headlines(ticker, lookback_days=cfg.lookback_days,
-                                          company_name=company_names().get(ticker),
-                                          max_headlines=cfg.max_headlines)
+    return data_source.get_news_articles(ticker, lookback_days=cfg.lookback_days,
+                                         company_name=company_names().get(ticker),
+                                         max_headlines=cfg.max_headlines)

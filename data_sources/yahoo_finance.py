@@ -2,7 +2,8 @@ import yfinance as yf
 from newsapi import NewsApiClient
 import os
 import pandas as pd
-from typing import List, Optional
+from typing import Dict, List, Optional
+from urllib.parse import urlparse
 import re
 from core.cache_mixin import CacheMixin
 from tqdm import tqdm
@@ -55,11 +56,18 @@ class YahooFinanceSource(CacheMixin):
         logger.info(f"Success: {len(combined.index.get_level_values('Ticker').unique())} tickers, shape {combined.shape}")
         return combined
 
-    @retry_on_network_error
     def get_news_headlines(self, ticker: str, lookback_days: int = 7, company_name: Optional[str] = None,
                            max_headlines: int = 10) -> List[str]:
+        """Titles of :meth:`get_news_articles` (what the sentiment model scores)."""
+        return [a['title'] for a in self.get_news_articles(ticker, lookback_days, company_name, max_headlines)]
+
+    @retry_on_network_error
+    def get_news_articles(self, ticker: str, lookback_days: int = 7, company_name: Optional[str] = None,
+                          max_headlines: int = 10) -> List[Dict[str, Optional[str]]]:
         """
-        Headlines about ``ticker`` published in the last ``lookback_days``.
+        Articles about ``ticker`` published in the last ``lookback_days``, as
+        ``{'title', 'url', 'source', 'tag'}`` dicts (``url``/``source`` may be None;
+        ``tag`` is a short outlet label such as "WSJ" or "NYT").
 
         NewsAPI (if ``NEWS_API_KEY`` is set) is searched for the company name in
         article *titles*, so short tickers like T, C or V don't match unrelated
@@ -67,46 +75,95 @@ class YahooFinanceSource(CacheMixin):
         Yahoo Finance news (already keyed to the ticker) is the fallback, also
         filtered by publish date. Cached for 1 hour.
         """
-        cache_key = self._cache_key("news", ticker=ticker, lookback=lookback_days, name=company_name,
+        cache_key = self._cache_key("news_articles", ticker=ticker, lookback=lookback_days, name=company_name,
                                     n=max_headlines)
         cached = self._cache.get(cache_key)
         if cached is not None:
             return cached
 
         since = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=lookback_days)
-        headlines: List[str] = []
+        articles: List[Dict[str, Optional[str]]] = []
 
         api_key = os.environ.get('NEWS_API_KEY')
         query = _news_query(ticker, company_name)
         if api_key and query:
             try:
-                articles = NewsApiClient(api_key=api_key).get_everything(
+                raw = NewsApiClient(api_key=api_key).get_everything(
                     qintitle=query,
                     from_param=since.strftime('%Y-%m-%dT%H:%M:%S'),
                     language='en',
                     sort_by='publishedAt',
                     page_size=max_headlines,
                 ).get('articles', [])
-                headlines = _dedupe(a.get('title') for a in articles)[:max_headlines]
-                logger.info(f"Fetched {len(headlines)} headlines for {ticker} from NewsAPI.")
+                articles = _dedupe(_article(a.get('title'), a.get('url'), (a.get('source') or {}).get('name'))
+                                   for a in raw)[:max_headlines]
+                logger.info(f"Fetched {len(articles)} headlines for {ticker} from NewsAPI.")
             except Exception as e:
                 logger.warning(f"NewsAPI failed for {ticker}: {e}. Falling back to yfinance news.")
 
-        if not headlines:
+        if not articles:
             try:
                 recent = []
                 for item in yf.Ticker(ticker).news or []:
-                    title, published = _yahoo_item(item)
-                    if title and (published is None or published >= since):
-                        recent.append(title)
-                headlines = _dedupe(recent)[:max_headlines]
-                logger.info(f"Fetched {len(headlines)} recent headlines for {ticker} from yfinance news.")
+                    article, published = _yahoo_item(item)
+                    if article['title'] and (published is None or published >= since):
+                        recent.append(article)
+                articles = _dedupe(recent)[:max_headlines]
+                logger.info(f"Fetched {len(articles)} recent headlines for {ticker} from yfinance news.")
             except Exception as e:
                 logger.warning(f"yfinance news fallback failed for {ticker}: {e}")
 
         # Cache even if empty to avoid repeated failed requests
-        self._cache.set(cache_key, headlines, ttl=3600)
-        return headlines
+        self._cache.set(cache_key, articles, ttl=3600)
+        return articles
+
+
+# Short labels for well-known outlets, matched against the lowercased publisher
+# name (NewsAPI source / Yahoo provider) and the article URL's domain.
+_SOURCE_TAGS = [
+    (("new york times", "nytimes.com"), "NYT"),
+    (("wall street journal", "wsj.com"), "WSJ"),
+    (("financial times", "ft.com"), "FT"),
+    (("bloomberg",), "Bloomberg"),
+    (("reuters",), "Reuters"),
+    (("cnbc",), "CNBC"),
+    (("washington post", "washingtonpost.com"), "WaPo"),
+    (("associated press", "apnews.com"), "AP"),
+    (("barron",), "Barron's"),
+    (("marketwatch",), "MarketWatch"),
+    (("business insider", "businessinsider.com"), "BI"),
+    (("the economist", "economist.com"), "Economist"),
+    (("forbes",), "Forbes"),
+    (("fortune",), "Fortune"),
+    (("motley fool", "fool.com"), "Motley Fool"),
+    (("seeking alpha", "seekingalpha.com"), "Seeking Alpha"),
+    (("investor's business daily", "investors.com"), "IBD"),
+    (("zacks",), "Zacks"),
+    (("benzinga",), "Benzinga"),
+    (("techcrunch",), "TechCrunch"),
+    (("the verge", "theverge.com"), "The Verge"),
+    (("bbc",), "BBC"),
+    (("guardian",), "Guardian"),
+    (("cnn.com", "cnn "), "CNN"),
+    (("yahoo",), "Yahoo Finance"),
+]
+
+
+def source_tag(source: Optional[str], url: Optional[str] = None) -> Optional[str]:
+    """Short outlet label ("WSJ", "NYT", ...); the publisher name if unknown, else the URL's domain."""
+    domain = re.sub(r"^www\.", "", urlparse(url).netloc.lower()) if url else ""
+    haystack = f" {(source or '').lower()} {domain} "
+    for needles, tag in _SOURCE_TAGS:
+        if any(n in haystack for n in needles):
+            return tag
+    return (source or "").strip() or domain or None
+
+
+def _article(title, url, source) -> Dict[str, Optional[str]]:
+    title = (title or "").strip()
+    url = url if isinstance(url, str) and url.startswith(("http://", "https://")) else None
+    source = (source or "").strip() or None
+    return {'title': title, 'url': url, 'source': source, 'tag': source_tag(source, url)}
 
 
 _NAME_SUFFIX = re.compile(
@@ -130,23 +187,27 @@ def _news_query(ticker: str, company_name: Optional[str]) -> Optional[str]:
     return ticker if len(ticker) >= 3 else None
 
 
-def _dedupe(titles) -> List[str]:
+def _dedupe(articles) -> List[Dict[str, Optional[str]]]:
+    """Drop empty, removed and repeated (case-insensitive) titles, keeping the first."""
     seen, out = set(), []
-    for title in titles:
-        title = (title or "").strip()
+    for article in articles:
+        title = article['title']
         if title and title.lower() not in seen and title != "[Removed]":
             seen.add(title.lower())
-            out.append(title)
+            out.append(article)
     return out
 
 
 def _yahoo_item(item: dict):
-    """(title, publish time as a UTC Timestamp or None) for old and new yfinance news formats."""
+    """(article dict, publish time as a UTC Timestamp or None) for old and new yfinance news formats."""
     content = item.get('content') if isinstance(item.get('content'), dict) else item
-    title = content.get('title')
+    url = ((content.get('canonicalUrl') or {}).get('url') or (content.get('clickThroughUrl') or {}).get('url')
+           or content.get('link') or item.get('link'))
+    source = (content.get('provider') or {}).get('displayName') or content.get('publisher') or item.get('publisher')
+    article = _article(content.get('title'), url, source)
     published = None
     if content.get('pubDate') or content.get('displayTime'):
         published = pd.to_datetime(content.get('pubDate') or content.get('displayTime'), utc=True, errors='coerce')
     elif item.get('providerPublishTime'):
         published = pd.to_datetime(item['providerPublishTime'], unit='s', utc=True, errors='coerce')
-    return title, (None if published is None or pd.isna(published) else published)
+    return article, (None if published is None or pd.isna(published) else published)

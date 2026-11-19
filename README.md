@@ -126,7 +126,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-CI runs the suite on Python 3.10 and 3.11 on every push and pull request ([ci.yml](.github/workflows/ci.yml)). A second workflow ([wake.yml](.github/workflows/wake.yml)) opens the hosted demo every 10 hours so it doesn't go to sleep.
+CI runs the suite on Python 3.10 and 3.11 on every push and pull request ([ci.yml](.github/workflows/ci.yml)). A second workflow ([wake.yml](.github/workflows/wake.yml)) opens the hosted demo every 6 hours so it doesn't go to sleep.
 
 ## Optional: FinBERT sentiment
 

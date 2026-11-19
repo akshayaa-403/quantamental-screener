@@ -66,6 +66,25 @@ class TestHeadlines:
         source = self._source(monkeypatch, news)
         assert source.get_news_headlines("AAPL", lookback_days=7) == ["Fresh", "Old format, fresh"]
 
+    def test_yahoo_articles_carry_link_and_outlet_tag(self, monkeypatch):
+        now = pd.Timestamp.now(tz="UTC")
+        news = [
+            {"content": {"title": "New", "pubDate": now.isoformat(), "provider": {"displayName": "Reuters"},
+                         "canonicalUrl": {"url": "https://www.reuters.com/a"}}},
+            {"title": "Old", "providerPublishTime": int(now.timestamp()), "publisher": "The Wall Street Journal",
+             "link": "https://www.wsj.com/b"},
+        ]
+        articles = self._source(monkeypatch, news).get_news_articles("AAPL", lookback_days=7)
+        assert [(a["url"], a["tag"]) for a in articles] == [("https://www.reuters.com/a", "Reuters"),
+                                                              ("https://www.wsj.com/b", "WSJ")]
+
+    def test_source_tag(self):
+        assert yahoo_finance.source_tag("The New York Times") == "NYT"
+        assert yahoo_finance.source_tag(None, "https://www.nytimes.com/x") == "NYT"
+        assert yahoo_finance.source_tag("Some Blog") == "Some Blog"
+        assert yahoo_finance.source_tag(None, "https://www.example.com/x") == "example.com"
+        assert yahoo_finance.source_tag(None, None) is None
+
     def test_newsapi_searches_titles_for_the_company_in_the_window(self, monkeypatch):
         calls = {}
 
