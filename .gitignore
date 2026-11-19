@@ -33,3 +33,7 @@ all_stock_scores.csv
 .claude/
 .idea/
 *.swp
+
+# Local tooling
+.obsidian/
+.pytest_cache/
